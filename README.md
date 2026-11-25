@@ -6,9 +6,11 @@ Threadlift is a local recovery helper for **macOS, T3 Code 0.1.12, and the defau
 
 ## Start from a T3 chat
 
-Give your agent this request:
+Copy this into a new T3 chat:
 
-> Read https://github.com/batmanscode/threadlift and use Threadlift to help me import my missing Codex chats. Launch the picker in my system browser so I can choose the chats and files. Leave existing chats unchanged.
+```text
+Read https://github.com/batmanscode/threadlift and use Threadlift to help me import my missing Codex chats. Launch the picker in my system browser so I can choose the chats and files. Leave existing chats unchanged.
+```
 
 With local command/file permissions, the agent can obtain and run Threadlift. You do not need to operate Terminal or install a separate Mac app yourself. The optional [skill](skills/threadlift/SKILL.md) teaches the same workflow; it is not required.
 
@@ -96,3 +98,4 @@ New Threadlift code is [Apache-2.0](LICENSE). Bundled T3 Code and dependencies r
 - [OpenClaw skill-creation guidance](https://github.com/openclaw/openclaw/blob/main/skills/skill-creator/SKILL.md)
 
 Threadlift was developed and reviewed with Codex and Gemini. Review assistance is not a guarantee of data fidelity; the tests and receipts describe the evidence.
+
