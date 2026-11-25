@@ -26,6 +26,8 @@ export async function atomicJson(path, value) {
   const file = await open(temporary, 'wx', 0o600);
   try { await file.writeFile(JSON.stringify(value, null, 2) + '\n'); await file.sync(); } finally { await file.close(); }
   await rename(temporary, path);
+  const directory = await open(dirname(path), 'r');
+  try { await directory.sync(); } finally { await directory.close(); }
 }
 export async function inspectTarget(t3Home) {
   const home = await realpath(expand(t3Home)), state = join(home, 'userdata'), dbPath = join(state, 'statev2.sqlite');
@@ -108,18 +110,44 @@ export function attachmentRecord(threadId, asset) {
 }
 export { projectDefaults };
 
+async function verifyExistingFiles(job) {
+  for (const file of job.expectedExisting || []) {
+    if (await realpath(file.destination).catch(() => null) !== resolve(file.destination) ||
+        hash(await readFile(file.destination)) !== file.sha256)
+      throw new Error(`A previously identical file is missing or changed: ${file.displayName}. Rescan before importing.`);
+  }
+}
+async function verifyWorkingFolder(root) {
+  if (await realpath(root).catch(() => null) !== resolve(root) || !(await lstat(root)).isDirectory())
+    throw new Error('A selected project folder moved or is missing. Rescan with its current path.');
+}
+async function verifyDestinations(job, target) {
+  for (const thread of job.batch.threads) {
+    const root = thread.runtime.runtimePayload.cwd, id = thread.events[0].payload.projectId;
+    await verifyWorkingFolder(root);
+    const existing = target.projects.find(p => p.id === id);
+    const planned = job.batch.projects.find(p => p.aggregateId === id);
+    if ((!existing && !planned) || (existing && resolve(existing.root) !== resolve(root)))
+      throw new Error('A selected T3 project was removed or its folder changed. Rescan before importing.');
+  }
+  await verifyExistingFiles(job);
+}
+
 export async function verifyJob(job) {
   const db = new DatabaseSync(job.target.dbPath, { readOnly: true, timeout: 2000 });
   const results = [];
   try {
     if (db.prepare('PRAGMA integrity_check').get().integrity_check !== 'ok') throw new Error('T3 database integrity verification failed.');
     for (const thread of job.batch.threads) {
+      await verifyWorkingFolder(thread.runtime.runtimePayload.cwd);
       const expected = thread.events.filter(e => e.type === 'message.updated').map(e => e.payload);
       const messages = db.prepare('SELECT payload_json FROM orchestration_v2_projection_messages WHERE thread_id=? ORDER BY created_at,message_id').all(thread.runtime.threadId).map(r => JSON.parse(r.payload_json));
       const byId = new Map(messages.map(m => [m.id, m]));
       if (messages.length !== expected.length || expected.some(m => !byId.has(m.id) || byId.get(m.id).text !== m.text || JSON.stringify(byId.get(m.id).attachments) !== JSON.stringify(m.attachments))) throw new Error(`History readback mismatch: ${thread.title}`);
       const runtime = db.prepare('SELECT resume_cursor_json,runtime_payload_json FROM provider_session_runtime WHERE thread_id=?').get(thread.runtime.threadId);
       if (JSON.parse(runtime?.resume_cursor_json || '{}').threadId !== thread.sourceId || JSON.parse(runtime?.runtime_payload_json || '{}').cwd !== thread.runtime.runtimePayload.cwd) throw new Error(`Continuation binding mismatch: ${thread.title}`);
+      const project = db.prepare('SELECT workspace_root FROM projection_projects WHERE project_id=? AND deleted_at IS NULL').get(thread.events[0].payload.projectId);
+      if (project?.workspace_root !== thread.runtime.runtimePayload.cwd) throw new Error(`Active project readback mismatch: ${thread.title}`);
       const app = db.prepare('SELECT project_id,active_provider_thread_id FROM orchestration_v2_projection_threads WHERE thread_id=?').get(thread.runtime.threadId);
       const providers = db.prepare('SELECT payload_json FROM orchestration_v2_projection_provider_threads WHERE thread_id=?').all(thread.runtime.threadId).map(r => JSON.parse(r.payload_json));
       const items = db.prepare('SELECT count(*) AS n FROM orchestration_v2_projection_turn_items WHERE thread_id=?').get(thread.runtime.threadId).n;
@@ -134,7 +162,18 @@ export async function verifyJob(job) {
     const bytes = await readFile(file.destination);
     if (hash(bytes) !== file.sha256) throw new Error(`File verification failed: ${file.displayName}`);
   }
+  await verifyExistingFiles(job);
   return results;
+}
+
+function hasImportEvidence(job, target) {
+  const db = new DatabaseSync(target.dbPath, { readOnly: true, timeout: 2000 });
+  try {
+    // Native bindings may legitimately change when T3 recovers a failed resume.
+    return job.batch.threads.some(thread =>
+      db.prepare('SELECT 1 FROM orchestration_events WHERE event_id=?').get(thread.events[0].id) ||
+      db.prepare('SELECT 1 FROM orchestration_v2_projection_threads WHERE thread_id=?').get(thread.runtime.threadId));
+  } finally { db.close(); }
 }
 
 export async function applyJob(jobPath, { waitMs = 20 * 60_000, onStatus = async () => {}, failAfterWrite = false, afterCommit, afterFile } = {}) {
@@ -146,32 +185,36 @@ export async function applyJob(jobPath, { waitMs = 20 * 60_000, onStatus = async
   const journalPath = join(jobDir, 'journal.json');
   let journal = { phase: 'new', files: [] };
   const save = () => atomicJson(journalPath, journal);
-  let ownership, databaseCommitted = false, journalLoaded = false;
+  let ownership, commitState = 'unknown', journalLoaded = false, freshAttempt = false;
   try {
     journal = await readFile(journalPath, 'utf8').then(JSON.parse).catch(e => { if (e.code === 'ENOENT') return journal; throw e; });
     journalLoaded = true;
-    const started = Date.now();
-    await status('waiting', 'Finish other T3 work, then quit T3 Code with Cmd+Q.');
-    while (!(ownership = acquireOwnership(job.target.state))) {
-      if (Date.now() - started >= waitMs) throw new Error('Timed out waiting for T3 to quit. No data was imported.');
-      await new Promise(r => setTimeout(r, 1000));
-    }
-    const target = await inspectTarget(job.target.home);
+    freshAttempt = journal.phase === 'new' && journal.files.length === 0;
     if (journal.phase === 'verified') {
       const result = JSON.parse(await readFile(join(jobDir, 'receipt.json'), 'utf8'));
       await status('complete', 'This job was already verified. Nothing was imported again.', { result });
       return result;
     }
+    const started = Date.now();
+    await status('waiting', 'Finish other T3 work, then quit T3 Code with Cmd+Q.');
+    while (!(ownership = acquireOwnership(job.target.state))) {
+      if (Date.now() - started >= waitMs) throw new Error('Timed out waiting for T3 to quit. No further import was attempted; existing data was preserved.');
+      await new Promise(r => setTimeout(r, 1000));
+    }
+    const target = await inspectTarget(job.target.home);
     if (target.fingerprint !== job.target.fingerprint) throw new Error('The T3 format changed after review. Rescan before importing.');
     const owned = job.batch.threads.map(t => target.owners[t.sourceId]);
-    if (owned.some(Boolean)) {
-      if (journal.phase === 'new' || !owned.every((id,i) => id === job.batch.threads[i].runtime.threadId)) throw new Error('A selected chat is already in T3. Rescan; existing imports stay unchanged.');
+    if (journal.phase === 'committed' || hasImportEvidence(job, target)) {
+      if (freshAttempt) throw new Error('A selected chat is already in T3. Rescan; existing imports stay unchanged.');
       // A crashed transaction either committed the whole batch or none of it.
       // Never replay or overwrite a chat that may have continued since then.
-      databaseCommitted = true;
+      commitState = 'committed';
+      journal.phase = 'committed'; await save();
     } else {
+      if (owned.some(Boolean)) throw new Error('A selected native chat is already owned in T3. Rescan; existing imports stay unchanged.');
+      commitState = 'absent';
+      await verifyDestinations(job, target);
       if (job.batch.projects.some(p => target.projects.some(existing => resolve(existing.root) === resolve(p.payload.workspaceRoot)))) throw new Error('A project for this folder was created after preparation. Rescan to use it.');
-      for (const thread of job.batch.threads) if (!target.projects.some(p => p.id === thread.events[0].payload.projectId) && !job.batch.projects.some(p => p.aggregateId === thread.events[0].payload.projectId)) throw new Error('A selected T3 project was removed. Rescan before importing.');
       for (const thread of job.batch.threads) {
         const defaults = projectDefaults(target.settings, thread.events[0].payload.projectId);
         const home = await realpath(expand(defaults.codexHome || join(homedir(), '.codex'))).catch(() => null);
@@ -189,8 +232,15 @@ export async function applyJob(jobPath, { waitMs = 20 * 60_000, onStatus = async
       await status('importing', 'Importing the selected chats and files.');
       for (const [i,file] of job.files.entries()) { await installFile(file, i, job, journal, save); await afterFile?.(i); }
       for (const file of job.files) if (hash(await readFile(file.destination)) !== file.sha256) throw new Error(`File verification failed: ${file.displayName}`);
-      await applyBatch(target.dbPath, job.batch, { failBeforeCommit: failAfterWrite });
-      databaseCommitted = true;
+      // A rejected writer promise is not proof that its transaction rolled back.
+      commitState = 'unknown';
+      try { await applyBatch(target.dbPath, job.batch, { failBeforeCommit: failAfterWrite }); }
+      catch (error) {
+        const observed = await inspectTarget(job.target.home).catch(() => null);
+        if (observed) commitState = hasImportEvidence(job, observed) ? 'committed' : 'absent';
+        throw error;
+      }
+      commitState = 'committed';
       await afterCommit?.();
       journal.phase = 'committed'; await save();
     }
@@ -206,10 +256,11 @@ export async function applyJob(jobPath, { waitMs = 20 * 60_000, onStatus = async
     await status(job.reopen ? 'reopening' : 'complete', job.reopen ? 'Import verified. Reopening T3.' : 'Import verified. Open T3 when ready.', { result });
     return result;
   } catch (error) {
-    const retainedFiles = databaseCommitted || !journalLoaded ? [] : await cleanOwnedFiles(journal);
-    if (!databaseCommitted && journalLoaded) { journal.files = journal.files.filter(e => retainedFiles.includes(e.temporary) || retainedFiles.includes(e.destination)); journal.phase = 'stopped'; await save(); }
-    await status('failed', error.message, { databaseCommitted, retainedFiles, backupPath: journal.backupPath,
-      recovery: databaseCommitted ? 'Imported data was preserved. Re-run this job to verify it; never restore a backup over newer work.' : 'The database transaction did not commit. Files changed by another process were left untouched.' });
+    const safeToClean = ownership && commitState === 'absent' && journalLoaded && freshAttempt;
+    const retainedFiles = safeToClean ? await cleanOwnedFiles(journal) : [];
+    if (safeToClean) { journal.files = journal.files.filter(e => retainedFiles.includes(e.temporary) || retainedFiles.includes(e.destination)); journal.phase = 'stopped'; await save(); }
+    await status('failed', error.message, { databaseCommitted: commitState === 'unknown' ? null : commitState === 'committed', retainedFiles, backupPath: journal.backupPath,
+      recovery: safeToClean ? 'No database import committed. Files changed by another process were left untouched.' : 'Existing files and any imported data were preserved. Check this job before retrying; never restore a backup over newer work.' });
     throw error;
   } finally {
     if (ownership) releaseOwnership(ownership);

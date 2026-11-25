@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
-import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { readFile, lstat, realpath, mkdir } from 'node:fs/promises';
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { readFile, lstat, realpath, mkdir, writeFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { execFile, execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
@@ -84,34 +84,63 @@ export async function servePicker({ codexHome = join(homedir(), '.codex'), t3Hom
   if (openBrowser) execFile('/usr/bin/open', [service.url], () => {});
   return service;
 }
+const xml = value => String(value).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&apos;' }[c]));
+function stopWorker(label) {
+  execFileSync('/bin/launchctl', ['bootout', `gui/${process.getuid()}/${label}`], { stdio: 'pipe' });
+}
 export async function launchWorker(jobPath) {
   if (process.platform !== 'darwin') throw new Error('The independent worker currently supports macOS only.');
+  jobPath = await realpath(jobPath);
   const dir = dirname(jobPath), job = JSON.parse(await readFile(jobPath, 'utf8'));
-  const label = `dev.threadlift.${job.id}`;
-  execFileSync('/bin/launchctl', ['submit', '-l', label, '-o', join(dir,'worker.log'), '-e', join(dir,'worker-error.log'), '--',
-    process.execPath, cli, 'worker', '--job', jobPath, '--label', label], { stdio: 'pipe' });
-  const started = Date.now();
-  while (Date.now() - started < 15_000) {
-    try { const ready = JSON.parse(await readFile(join(dir,'worker.json'),'utf8')); return { url: ready.url + '#' + job.browserToken, label }; }
-    catch (e) { if (e.code !== 'ENOENT') throw e; }
-    await new Promise(r => setTimeout(r,100));
+  const launchId = randomUUID(), label = `dev.threadlift.${job.id}.${launchId.slice(0,8)}`;
+  const plist = join(dir, `worker-${launchId}.plist`);
+  const args = [process.execPath, cli, 'worker', '--job', jobPath, '--label', label, '--launch-id', launchId];
+  // submit implicitly restarts failures. An explicit KeepAlive=false job is one-shot.
+  await writeFile(plist, `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>Label</key><string>${xml(label)}</string>
+<key>ProgramArguments</key><array>${args.map(a => `<string>${xml(a)}</string>`).join('')}</array>
+<key>RunAtLoad</key><true/><key>KeepAlive</key><false/>
+<key>StandardOutPath</key><string>${xml(join(dir,'worker.log'))}</string>
+<key>StandardErrorPath</key><string>${xml(join(dir,'worker-error.log'))}</string>
+</dict></plist>`, { mode: 0o600, flag: 'wx' });
+  let registered = false;
+  try {
+    execFileSync('/bin/launchctl', ['bootstrap', `gui/${process.getuid()}`, plist], { stdio: 'pipe' });
+    registered = true;
+    const started = Date.now();
+    while (Date.now() - started < 15_000) {
+      const failure = await readFile(join(dir,`startup-${launchId}.json`),'utf8').then(JSON.parse).catch(e => { if (e.code === 'ENOENT') return null; throw e; });
+      if (failure) throw new Error(failure.message);
+      const ready = await readFile(join(dir,'worker.json'),'utf8').then(JSON.parse).catch(e => { if (e.code === 'ENOENT') return null; throw e; });
+      if (ready?.launchId === launchId) return { url: ready.url + '#' + job.browserToken, label };
+      await new Promise(r => setTimeout(r,100));
+    }
+    throw new Error('The background helper did not acknowledge startup.');
+  } catch (error) {
+    let stopped = !registered;
+    if (registered) { try { stopWorker(label); stopped = true; } catch {} }
+    throw new Error(`${error.message} ${stopped ? 'This worker was stopped or did not start.' : 'Worker shutdown could not be confirmed.'} Check this job before retrying: ${dir}`);
   }
-  throw new Error(`Background helper did not start. T3 is unchanged. Details: ${join(dir,'worker-error.log')}`);
 }
-export async function runWorker(jobPath, { label, cleanupMs = 10*60_000, waitMs } = {}) {
+export async function runWorker(jobPath, { label, launchId, cleanupMs = 10*60_000, waitMs } = {}) {
   jobPath = await realpath(jobPath); const dir = dirname(jobPath), job = JSON.parse(await readFile(jobPath,'utf8'));
   if (job.format !== 'threadlift-job-v1' || !/^[a-f0-9]{64}$/.test(job.browserToken || '')) throw new Error('Invalid prepared job.');
   const gateDirectory = join(homedir(), 'Library/Application Support/Threadlift/worker-locks', hash(job.target.home));
-  await mkdir(gateDirectory, { recursive: true, mode: 0o700 });
-  const releaseGate = jobLock(gateDirectory);
-  let service;
-  try { service = await startHttp(job.browserToken, async (path, method) => {
-    if (path === '/api/state' && method === 'GET') return { mode: 'progress', sources: job.sources,
-      status: JSON.parse(await readFile(join(dir,'status.json'),'utf8')), directory: dir, autoReopen: job.reopen === true };
-    throw new Error('This import is already prepared.');
-  });
-  } catch (e) { releaseGate(); throw e; }
-  await atomicJson(join(dir,'worker.json'), { pid: process.pid, url: service.url.split('#')[0] });
+  let service, releaseGate;
+  try {
+    await mkdir(gateDirectory, { recursive: true, mode: 0o700 });
+    releaseGate = jobLock(gateDirectory);
+    service = await startHttp(job.browserToken, async (path, method) => {
+      if (path === '/api/state' && method === 'GET') return { mode: 'progress', sources: job.sources,
+        status: JSON.parse(await readFile(join(dir,'status.json'),'utf8')), directory: dir, autoReopen: job.reopen === true };
+      throw new Error('This import is already prepared.');
+    });
+    await atomicJson(join(dir,'worker.json'), { pid: process.pid, url: service.url.split('#')[0], launchId });
+  } catch (error) {
+    service?.server.close(); releaseGate?.();
+    if (launchId) await atomicJson(join(dir,`startup-${launchId}.json`), { message: error.message });
+    throw error;
+  }
   const completion = (async () => {
     try {
       if (job.reopen && job.appPath) readAppVersion(job.appPath);
@@ -129,7 +158,7 @@ export async function runWorker(jobPath, { label, cleanupMs = 10*60_000, waitMs 
     } finally {
       releaseGate();
       const timer = setTimeout(() => { service.server.close();
-        if (label?.startsWith('dev.threadlift.')) { try { execFileSync('/bin/launchctl',['remove',label]); } catch {} }
+        if (label?.startsWith('dev.threadlift.')) { try { stopWorker(label); } catch {} }
       },cleanupMs); timer.unref();
     }
   })();

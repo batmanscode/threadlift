@@ -1,10 +1,11 @@
-import { mkdtemp, mkdir, writeFile, readFile, rm, realpath } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { initializeFixture } from '../work/t3-fixture.mjs';
-export async function fixture() {
+export async function fixture(t, { turns = 1 } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'threadlift-test-')));
+  t?.after(() => rm(root, { recursive: true, force: true }));
   const source = join(root, 'codex'), target = join(root, 't3'), workspace = join(root, 'project'), scratch = join(root, 'scratch');
   await Promise.all([mkdir(join(source, 'sessions/2026/11/25'), { recursive: true }), mkdir(join(target, 'userdata'), { recursive: true }), mkdir(workspace), mkdir(scratch)]);
   await initializeFixture(join(target, 'userdata/statev2.sqlite'));
@@ -23,7 +24,7 @@ export async function fixture() {
   await writeFile(pdf, document);
   await writeFile(join(scratch, 'result.txt'), 'A real workspace file.');
   const records = [{ type: 'session_meta', timestamp: time, payload: { id, cwd: scratch } }];
-  for (let i = 0; i < 130; i++) {
+  for (let i = 0; i < turns; i++) {
     const user = `User message ${i}`, assistant = `Assistant reply ${i}`;
     records.push({ type: 'event_msg', timestamp: time, payload: { type: 'user_message', message: user, local_images: i === 0 ? [image] : [] } });
     records.push({ type: 'response_item', timestamp: time, payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: user }, ...(i === 0 ? [{ type: 'input_file', path: pdf, filename: 'brief.pdf' }] : [])] } });

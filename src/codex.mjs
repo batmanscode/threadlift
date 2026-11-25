@@ -10,7 +10,7 @@ export const LIMITS = Object.freeze({ transcriptBytes: 128 * 1024 * 1024, metada
   sourceFiles: 20_000, workspaceFiles: 10_000, stagedBytes: 1024 * 1024 * 1024, forkDepth: 32 });
 export const hash = value => createHash('sha256').update(value).digest('hex');
 export const inside = (root, path) => { const r = relative(resolve(root), resolve(path)); return r === '' || (!r.startsWith('..' + sep) && r !== '..' && !isAbsolute(r)); };
-export const expand = value => value === '~' ? homedir() : value.startsWith('~/') ? join(homedir(), value.slice(2)) : resolve(value);
+export const expand = value => resolve(value === '~' ? homedir() : value.startsWith('~/') ? join(homedir(), value.slice(2)) : value);
 export const iso = (value, fallback = new Date().toISOString()) => { const n = typeof value === 'number' ? value * (value < 1e12 ? 1000 : 1) : value; const date = new Date(n); return Number.isFinite(date.getTime()) ? date.toISOString() : fallback; };
 
 async function bounded(path, limit) {
@@ -32,7 +32,9 @@ async function walk(path, output = []) {
   }
   return output;
 }
-function uuidInPath(path) { return /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\.jsonl(?:\.zst)?)$/i.exec(path)?.[1]; }
+function uuidInPath(path) {
+  return /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:_[0-9a-f-]{36})?\.jsonl(?:\.zst)?$/i.exec(path)?.[1];
+}
 
 export async function discoverCodex(codexHome, { days = 30 } = {}) {
   if (!Number.isSafeInteger(days) || days < 0) throw new Error('Days must be a nonnegative whole number (0 includes all local chats).');
@@ -56,9 +58,24 @@ export async function discoverCodex(codexHome, { days = 30 } = {}) {
     try { const n = JSON.parse(line); if (typeof n.id === 'string' && typeof n.thread_name === 'string' && n.thread_name.trim()) names.set(n.id, n.thread_name.trim()); } catch {}
   } } catch (e) { if (e.code !== 'ENOENT') throw e; }
   const allPaths = [...await walk(join(codexHome, 'sessions')), ...await walk(join(codexHome, 'archived_sessions'))];
-  const paths = new Map();
-  for (const path of allPaths) { const id = uuidInPath(path); if (id && (!paths.has(id) || !path.endsWith('.zst'))) paths.set(id, path); }
-  for (const row of rows.values()) if (typeof row.rollout_path === 'string' && inside(codexHome, row.rollout_path)) paths.set(row.id, row.rollout_path);
+  const paths = new Map(), versions = new Map(), unsupported = new Set();
+  for (const path of allPaths) {
+    const id = uuidInPath(path); if (!id) continue;
+    const name = basename(path).replace(/\.zst$/, '');
+    if (!versions.has(id)) versions.set(id, new Set());
+    versions.get(id).add(name);
+    if (versions.get(id).size > 1 || /_[0-9a-f-]{36}\.jsonl$/i.test(name)) unsupported.add(id);
+    if (!paths.has(id) || !path.endsWith('.zst')) paths.set(id, path);
+  }
+  for (const row of rows.values()) if (typeof row.rollout_path === 'string') {
+    let active;
+    if (inside(codexHome, row.rollout_path)) for (const candidate of [row.rollout_path, row.rollout_path.endsWith('.zst') ? row.rollout_path.slice(0,-4) : row.rollout_path+'.zst']) {
+      const stat = await lstat(candidate).catch(e => { if (e.code === 'ENOENT') return null; throw e; });
+      if (stat?.isFile() && !stat.isSymbolicLink()) { active = candidate; break; }
+    }
+    if (active) paths.set(row.id, active);
+    else unsupported.add(row.id); // Never replace a missing active branch with an older rollout.
+  }
   const chats = [];
   for (const [id, path] of paths) {
     const row = rows.get(id) || {};
@@ -84,10 +101,11 @@ export async function discoverCodex(codexHome, { days = 30 } = {}) {
       model: row.model || null, createdAt: row.created_at ? iso(row.created_at) : meta.timestamp || updatedAt, updatedAt,
       archived: Boolean(row.archived), compressed: path.endsWith('.zst'), codexHome });
   }
-  return { codexHome, chats: chats.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)), paths };
+  return { codexHome, chats: chats.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)), paths, unsupported };
 }
 
 async function recordsFor(chat, index, seen = new Set(), bytes = { total: 0 }, endByteOffset) {
+  if (index.unsupported?.has(chat.id)) throw new Error('This chat has rewound or ambiguous rollout history. No partial history was imported.');
   if (seen.has(chat.id) || seen.size >= LIMITS.forkDepth) throw new Error('Cyclic or excessively deep Codex history.');
   seen.add(chat.id);
   if (!inside(chat.codexHome, await realpath(chat.path))) throw new Error('Transcript escapes the selected Codex home.');
@@ -107,8 +125,11 @@ async function recordsFor(chat, index, seen = new Set(), bytes = { total: 0 }, e
   }
   const meta = records.find(r => r.type === 'session_meta')?.payload || {};
   const base = meta.history_base;
+  if (base?.thread_id === chat.id) throw new Error('Same-thread rewind history is not supported. No partial history was imported.');
   let parent = [];
   if (base !== undefined) {
+    if (!base || typeof base.thread_id !== 'string' || !Number.isSafeInteger(base.end_byte_offset) || base.end_byte_offset < 0)
+      throw new Error('Inherited history requires a valid byte boundary. No partial history was imported.');
     const parentPath = index.paths.get(base.thread_id);
     if (!parentPath) throw new Error(`Inherited Codex history is missing: ${base.thread_id}`);
     parent = await recordsFor({ ...chat, id: base.thread_id, path: parentPath }, index, seen, bytes, base.end_byte_offset);
@@ -151,7 +172,7 @@ export async function readConversation(chat, index) {
       throw new Error('This transcript contains an unsupported rewind record; no partial history will be imported.');
     if (record.type === 'event_msg' && p.type === 'agent_message') add('assistant', p.message || '', record, [], false);
     if (record.type === 'event_msg' && p.type === 'user_message') add('user', p.message || '', record, assetContent(p));
-    if (record.type === 'response_item' && p.type === 'message' && p.role === 'user' && /^\s*(?:# AGENTS\.md instructions for |<environment_context>|<permissions instructions>|<user_instructions>)/.test(textContent(p.content))) continue;
+    if (record.type === 'response_item' && p.type === 'message' && p.role === 'user' && /^\s*(?:# AGENTS\.md instructions for |<environment_context>|<permissions instructions>|<user_instructions>|<in-app-browser-context(?:\s|>))/.test(textContent(p.content))) continue;
     if (record.type === 'response_item' && p.type === 'message' && ['user', 'assistant'].includes(p.role)) add(p.role, textContent(p.content), record, assetContent(p), true);
   }
   if (!messages.length) throw new Error('No supported conversation messages found.');
