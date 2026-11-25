@@ -80,7 +80,7 @@ npm run build:adapter
 npm test
 ```
 
-The build verifies upstream commit `ca81b7b97a1c4b91e5ac25768d0f6629f37732fd`. Tests create isolated Codex/T3 profiles; never point development servers or write tests at a real profile. The first release was also checked against the official T3 0.1.12 client: earlier history and attachment downloads worked, and a real Codex session continued with its remembered context and read a copied file from the selected project folder. This is evidence for the tested path, not every possible Codex history or provider configuration.
+The build verifies upstream commit `ca81b7b97a1c4b91e5ac25768d0f6629f37732fd`. Tests create isolated Codex/T3 profiles; never point development servers or write tests at a real profile. The first release was also checked against the official T3 0.1.12 server and web client: earlier history and attachment downloads worked, and a real Codex session continued with its remembered context and read a copied file from the selected project folder. The desktop app was not installed for this test, so its normal quit and automatic relaunch were not exercised. This is evidence for the tested path, not every possible Codex history or provider configuration.
 
 A compatibility update needs an upstream writer build, schema fixture, full-history/file checks, existing-chat protection, failure recovery, and a real-client pass.
 
