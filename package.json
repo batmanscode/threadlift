@@ -1,0 +1,38 @@
+{
+  "name": "threadlift",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Recover selected local Codex chats and files into T3 Code.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=24.10.0"
+  },
+  "bin": {
+    "threadlift": "bin/threadlift.mjs"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "build:adapter": "node scripts/build-t3-adapter.mjs"
+  },
+  "devDependencies": {
+    "@effect/platform-node": "4.1.5",
+    "diff": "^8.0.4",
+    "effect": "4.1.5",
+    "esbuild": "0.27.0",
+    "hast-util-sanitize": "^5.0.2",
+    "mdast-util-directive": "^3.2.1",
+    "micromark-extension-directive": "4.0.0",
+    "micromark-util-character": "^2.1.1",
+    "micromark-util-decode-string": "^2.0.1",
+    "property-information": "^7.2.0",
+    "rehype-raw": "^7.0.0",
+    "rehype-sanitize": "^6.0.0",
+    "remark-breaks": "^4.0.0",
+    "remark-gfm": "^4.0.1",
+    "remark-parse": "^11.0.0",
+    "remark-rehype": "^11.1.2",
+    "unified": "^11.0.5",
+    "yaml": "^2.9.1"
+  }
+}

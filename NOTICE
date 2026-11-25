@@ -1,0 +1,7 @@
+Threadlift
+Copyright 2026 Threadlift contributors
+
+The release-pinned adapter includes MIT-licensed code from T3 Code
+(Copyright 2026 T3 Tools Inc.) and its dependencies. The upstream commit is
+ca81b7b97a1c4b91e5ac25768d0f6629f37732fd (T3 Code v0.1.12).
+See vendor/THIRD_PARTY_LICENSES.txt for retained license notices.

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Threadlift"
+  short_description: "Recover missing Codex chats and files into T3"
+  default_prompt: "Use $threadlift to help me recover my missing Codex chats and files into T3 Code."
