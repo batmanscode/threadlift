@@ -32,7 +32,7 @@ cd threadlift
 node bin/threadlift.mjs open
 ```
 
-For an agent-managed installation, keep the checkout somewhere stable such as `~/Library/Application Support/Threadlift/app`, rather than an automatically cleaned-up T3 worktree. The helper must remain available after T3 quits.
+For an agent-managed installation, keep the checkout somewhere stable such as `~/Library/Application Support/Threadlift/app`, rather than an automatically cleaned-up T3 worktree. The helper must remain available after T3 quits. Finish any long T3 runs before preparing: the worker waits up to 20 minutes for T3 to quit.
 
 Useful options:
 
@@ -43,7 +43,7 @@ node bin/threadlift.mjs open --days 0
 node bin/threadlift.mjs status --job /absolute/path/to/job.json
 ```
 
-`inspect` reads metadata without importing. The normal scan covers 30 days; `--days 0` includes older local chats. `--app` selects a custom T3 app location. `--no-reopen` is for isolated profiles/headless testing; it does not disable compatibility checks. `apply --job PATH` runs or retries an already prepared job and waits for the server ownership lock. Automatic reopening supports the default `~/.t3` profile; use `--no-reopen` for isolated profiles and open the intended profile yourself.
+`inspect` reports compatibility and chat counts without printing chat titles or paths. Use `inspect --details` only when you want that private metadata in the command output. The normal scan covers 30 days; `--days 0` includes older local chats. `--app` selects a custom T3 app location. `--no-reopen` is for isolated profiles/headless testing; it does not disable compatibility checks. `apply --job PATH` runs or retries an already prepared job and waits for the server ownership lock. Automatic reopening supports the default `~/.t3` profile; use `--no-reopen` for isolated profiles and open the intended profile yourself.
 
 ## What comes across
 
@@ -51,7 +51,7 @@ node bin/threadlift.mjs status --job /absolute/path/to/job.json
 - Recoverable local uploaded images and files, stored as T3 attachments.
 - Files already in a project folder remain there. Optional recovery copies regular files from the chat's original working folder without overwriting destination files.
 - The original Codex session ID and selected working folder are linked so T3 can attempt continuation. Check with a real follow-up after importing.
-- Plain JSONL, Zstandard-compressed rollouts, and inherited `history_base` prefixes. Unsupported or incomplete rewind histories stop with an explanation.
+- Plain JSONL, Zstandard-compressed rollouts, and inherited `history_base` prefixes with an explicit byte boundary. Same-thread rewinds, ambiguous versions, missing active rollouts, and incomplete histories stop with an explanation; an old discarded branch is never selected as a fallback.
 
 Existing T3 chats—including partial imports—are left unchanged. Threadlift does not merge into or replace them. It does not recreate deleted files, download remote-only attachments, migrate credentials/settings, replay every Codex tool/UI panel, or translate sessions to another provider. Historical absolute links in conversation text are preserved and may still point to an old folder.
 
@@ -65,7 +65,9 @@ Each job lives in `~/Library/Application Support/Threadlift/jobs/` with private 
 
 Threadlift holds T3's own `server-owner.sqlite` lock throughout backup, import, and verification. It never deletes that lock or kills T3 processes. Unsupported database formats and managed T3 environments are refused. Original Codex data is read-only.
 
-History verification runs inside the SQLite transaction before commit: a pre-commit failure leaves T3’s database unchanged. If the helper is interrupted after commit, it preserves imported data. `node bin/threadlift.mjs apply --job /absolute/path/job.json` can verify/retry that same job without importing it twice. If imported data has since changed, it stops rather than overwriting it. Threadlift never automatically restores a database backup.
+Prepared project folders and previously identical files are checked again before writing. A renamed folder, changed project root, or missing expected file requires a rescan.
+
+History verification runs inside the SQLite transaction before commit: a pre-commit failure leaves T3’s database unchanged. If the helper is interrupted after commit, it preserves imported data. Retry checks use the stored import events and T3 chat identity, including when T3 has replaced the original native-session binding. A timeout or uncertain database state never authorizes deleting previously installed files. `node bin/threadlift.mjs apply --job /absolute/path/job.json` can verify/retry that same job without importing it twice. When verifying an interrupted job, it stops if the imported data has since changed. An already verified job returns its original dated receipt without importing again or performing a new history/file audit. Threadlift never automatically restores a database backup. Background workers run once; failed startup is stopped rather than left to restart later. If the handoff cannot be confirmed, the error identifies the private job directory to inspect before retrying.
 
 Failures are reported in the browser and job status. A backup is not permission to replace a database after you have done new work: do not copy `before.sqlite` over a live or subsequently changed profile. Keep the job directory until you have checked the imported chat and files. Once satisfied and the helper has finished, you can remove the job directory to reclaim space and remove the extra local chat copy.
 

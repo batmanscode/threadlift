@@ -11,8 +11,8 @@ try {
   while (args.length) {
     const key = args.shift(); if (!key.startsWith('--')) throw new Error(`Unexpected argument: ${key}`);
     const flag = key.slice(2);
-    if (!['codex-home','t3-home','app','days','no-browser','no-reopen','help','job-root','job','label'].includes(flag)) throw new Error(`Unknown option: ${key}`);
-    if (['no-browser','no-reopen','help'].includes(flag)) options[flag] = true;
+    if (!['codex-home','t3-home','app','days','no-browser','no-reopen','help','job-root','job','label','details','launch-id'].includes(flag)) throw new Error(`Unknown option: ${key}`);
+    if (['no-browser','no-reopen','help','details'].includes(flag)) options[flag] = true;
     else { const value = args.shift(); if (!value || value.startsWith('--')) throw new Error(`Missing value for ${key}`); options[flag] = value; }
   }
   if (options.help || command === 'help') {
@@ -26,8 +26,8 @@ try {
       console.log(`Threadlift is ready. Private browser link (keep it local):\n${service.url}`);
     } else if (command === 'inspect') {
       const index = await discoverCodex(codexHome,{ days: options.days === undefined ? 30 : Number(options.days) }), target = await inspectTarget(t3Home);
-      console.log(JSON.stringify({ t3Version:target.version,chats:index.chats.map(({id,title,root,cwd,assignment}) => ({id,title,root,cwd,assignment,alreadyInT3:Boolean(target.owners[id])})) },null,2));
-    } else if (command === 'worker') await runWorker(options.job,{label:options.label});
+      console.log(JSON.stringify(options.details ? { t3Version:target.version,chats:index.chats.map(({id,title,root,cwd,assignment}) => ({id,title,root,cwd,assignment,alreadyInT3:Boolean(target.owners[id])})) } : { t3Version:target.version,chatsFound:index.chats.length,alreadyInT3:index.chats.filter(c=>target.owners[c.id]).length,unsupportedHistories:index.unsupported.size },null,2));
+    } else if (command === 'worker') await runWorker(options.job,{label:options.label,launchId:options['launch-id']});
     else if (command === 'apply') { if (!options.job) throw new Error('Provide --job /absolute/path/job.json'); console.log(JSON.stringify(await applyJob(options.job),null,2)); }
     else if (command === 'status') { if (!options.job) throw new Error('Provide --job /absolute/path/job.json'); console.log(await readFile(join(dirname(options.job),'status.json'),'utf8')); }
     else throw new Error(`Unknown command: ${command}`);

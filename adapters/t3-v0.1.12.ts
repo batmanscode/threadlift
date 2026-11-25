@@ -23,7 +23,10 @@ export function projectDefaults(raw: unknown, projectId: string) {
     throw new Error('Enable the default Codex provider instance in this T3 project before importing.');
   const resolved = resolveProjectSettings(settings, projectId, null).settings;
   const codex = Schema.decodeUnknownSync(CodexSettings)(settings.providerInstances.codex?.config || {});
-  return { runtimeMode: resolved.defaultRuntimeMode, model: DEFAULT_MODEL, codexHome: codex.homePath }; 
+  const environmentHome = codex.setupMode === 'managed' ? undefined : settings.providerInstances.codex?.environment?.findLast(v => v.name === 'CODEX_HOME')?.value;
+  if (!codex.homePath && environmentHome !== undefined && typeof environmentHome !== 'string')
+    throw new Error('The Codex home is a secret reference. Set an explicit home path before importing.');
+  return { runtimeMode: resolved.defaultRuntimeMode, model: DEFAULT_MODEL, codexHome: codex.homePath || environmentHome || '' };
 }
 
 // Keep both canonical events and immediate projections under the upstream writer.
@@ -38,11 +41,16 @@ export async function applyBatch(dbPath: string, input: { projects: unknown[]; t
       for (const raw of input.projects) {
         const event = yield* Schema.decodeUnknownEffect(ApplicationProjectEvent)({ ...(raw as object), sequence: 0 });
         const { sequence: _, ...unsequenced } = event;
-        yield* sink.commitProjectCommand({ commandId: event.commandId!, projectId: event.aggregateId,
+        const result = yield* sink.commitProjectCommand({ commandId: event.commandId!, projectId: event.aggregateId,
           commandType: 'project.create', acceptedAt: DateTime.makeUnsafe(event.occurredAt), event: unsequenced });
+        if (!result.committed) throw new Error('Project creation was already processed; rescan before importing.');
       }
       const imported: string[] = [];
       for (const thread of input.threads) {
+        const projectId = thread.events[0].payload.projectId;
+        const projects = yield* sql`SELECT workspace_root FROM projection_projects WHERE project_id=${projectId} AND deleted_at IS NULL`;
+        if (projects.length !== 1 || projects[0].workspace_root !== thread.runtime.runtimePayload.cwd)
+          throw new Error('The selected project is missing or its folder changed. Rescan before importing.');
         const events = yield* Effect.forEach(thread.events, event => Schema.decodeUnknownEffect(OrchestrationV2DomainEventJson)(event));
         const provider = yield* Schema.decodeUnknownEffect(OrchestrationV2ProviderThreadJson)(thread.provider);
         const committed = yield* sink.write({ unlessNativeThreadOwned: provider, events });
