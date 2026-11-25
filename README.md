@@ -20,7 +20,7 @@ With local command/file permissions, the agent can obtain and run Threadlift. Yo
 4. **Finish other T3 runs, then quit T3 with Cmd+Q.** Quitting T3 ends its active agent run; that is expected. The independent helper keeps working. Keep the system-browser tab open for progress and the receipt. Do not start another T3 server or CLI write during the import.
 5. **Wait.** The helper takes a consistent backup, imports, verifies, and reopens T3. The browser shows the result. If reopening fails, it explicitly asks you to open T3 normally.
 
-Find imported chats in T3’s **Settled** section, or search their titles. Open one and send a follow-up to check continuation. The receipt distinguishes verified history/files from the original session binding; **a binding alone does not prove a successful live follow-up**.
+Find imported chats in T3’s **Settled** section, or search their titles. **Before doing real work in T3, check that the chats you expected are present, earlier and recent messages are readable, uploads open, and each chat points to the right project folder.** Review missing/skipped files in the receipt. If you want to check continuation, send a follow-up after reading the [shared-session note below](#local-data-and-recovery). The receipt distinguishes verified history/files from the original session binding; **a binding alone does not prove a successful live follow-up**.
 
 ## Run directly
 
@@ -63,13 +63,29 @@ Chat data stays on this Mac. There is no telemetry, account, cloud upload, or Ge
 
 Each job lives in `~/Library/Application Support/Threadlift/jobs/` with private file permissions. It contains a conversation copy, staged files, a file manifest, a consistent SQLite backup, status, and a receipt. Treat this directory as private: it contains your chat content. The browser link is private too.
 
-Threadlift holds T3's own `server-owner.sqlite` lock throughout backup, import, and verification. It never deletes that lock or kills T3 processes. Unsupported database formats and managed T3 environments are refused. Original Codex data is read-only.
+Threadlift holds T3's own `server-owner.sqlite` lock throughout backup, import, and verification. It never deletes that lock or kills T3 processes. Unsupported database formats and managed T3 environments are refused.
+
+**The import reads your original Codex data without changing it.** It does not rename or move your original folders or rewrite Codex's saved paths. Imported history and uploads are stored in T3; optional workspace recovery adds copies to your selected folder without overwriting existing files.
+
+**Continuing an imported chat in T3 resumes the same underlying Codex session**, using the selected project folder. New messages, chat metadata changes, and agent file edits can affect that shared session and folder. Removing T3 does not undo those changes. Finish work in one app before running the same chat in the other.
 
 Prepared project folders and previously identical files are checked again before writing. A renamed folder, changed project root, or missing expected file requires a rescan.
 
 History verification runs inside the SQLite transaction before commit: a pre-commit failure leaves T3’s database unchanged. If the helper is interrupted after commit, it preserves imported data. Retry checks use the stored import events and T3 chat identity, including when T3 has replaced the original native-session binding. A timeout or uncertain database state never authorizes deleting previously installed files. `node bin/threadlift.mjs apply --job /absolute/path/job.json` can verify/retry that same job without importing it twice. When verifying an interrupted job, it stops if the imported data has since changed. An already verified job returns its original dated receipt without importing again or performing a new history/file audit. Threadlift never automatically restores a database backup. Background workers run once; failed startup is stopped rather than left to restart later. If the handoff cannot be confirmed, the error identifies the private job directory to inspect before retrying.
 
 Failures are reported in the browser and job status. A backup is not permission to replace a database after you have done new work: do not copy `before.sqlite` over a live or subsequently changed profile. Keep the job directory until you have checked the imported chat and files. Once satisfied and the helper has finished, you can remove the job directory to reclaim space and remove the extra local chat copy.
+
+### If the import fucks up
+
+**For a new T3 installation with no T3-only work you need to keep:** if the import is wrong or incomplete, stop using T3, uninstall it, and ask your agent to remove T3's own saved data. You can keep using Codex and try importing again after a fix. Preserve your Codex data folder (`~/.codex` by default, or your configured Codex home), original uploads, and original project folders. This reset discards T3-only chats and settings; it is not a way to undo work already done through T3.
+
+Copy this into a Codex chat if you want that clean start:
+
+```text
+This is a new T3 Code installation, and I have no T3-only work I need to keep. Help me uninstall T3 Code and remove its own saved data so I can try importing again later. Identify which paths belong to T3 before removing them. Preserve my Codex data (including any configured Codex home), original uploads, and all original project folders. Do not remove shared Codex or project data.
+```
+
+Uninstalling the T3 app alone leaves its saved data behind. Deleting an individual T3 chat also leaves a session-ownership record, so Threadlift still treats it as already imported. For a clean start after deliberately discarding T3's data, initialize a fresh profile in a supported T3 version, then run a new scan and prepare a new import. Do not reuse an old prepared job against the reset profile.
 
 ## Development
 
