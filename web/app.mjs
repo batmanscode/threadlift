@@ -33,11 +33,38 @@ function renderChats() {
     renderReviews();
   }));
 }
+// Match the helper's tilde expansion and POSIX path resolution on macOS.
+function normalizedFolder(value) {
+  const { home, cwd } = state.pathContext;
+  let path = value === '~' ? home : value.startsWith('~/') ? home + '/' + value.slice(2) : value;
+  if (!path.startsWith('/')) path = cwd + '/' + path;
+  const parts = [];
+  for (const part of path.split('/')) {
+    if (part === '..') parts.pop();
+    else if (part && part !== '.') parts.push(part);
+  }
+  return '/' + parts.join('/');
+}
+function renderRecovery(card, c) {
+  const hasFolder = Boolean(c.destination.trim()), hasSource = Boolean(c.cwd);
+  const canCopy = hasFolder && hasSource && normalizedFolder(c.destination) !== normalizedFolder(c.cwd);
+  if (!canCopy) c.recoverWorkspace = false;
+  const slot = card.querySelector('[data-recovery]');
+  const note = !hasFolder ? 'Choose the current project folder.' : !hasSource ? 'No original workspace folder was recorded.' : 'Project files remain in their existing folder.';
+  slot.innerHTML = canCopy ? `<label class="checkline"><input type="checkbox" data-recover="${escape(c.id)}" ${c.recoverWorkspace?'checked':''}><span>Copy files from the original workspace folder<small class="path">${escape(c.cwd)} → selected project folder</small><small>Copies all regular files in this folder. Existing files will not be overwritten. Git metadata, caches and symlinks are skipped.</small></span></label>` : `<small>${note}</small>`;
+  slot.querySelector('[data-recover]')?.addEventListener('change', event => c.recoverWorkspace = event.target.checked);
+}
 function renderReviews() {
   const reviews=document.getElementById('reviews');
-  reviews.innerHTML=selected.size?[...selected.entries()].map(([id,c])=>c.loading?'<div class="empty">Reading the available conversation and files…</div>':`<article class="review-card" data-review="${escape(id)}"><div class="review-title"><h2>${escape(c.title)}</h2><span class="badge count">${c.messages} available messages · ${c.assets.filter(a=>!a.error).length} files available</span></div><div class="review-content"><details><summary>Check the conversation</summary><small>First message</small><div class="preview-text">${escape(c.first)}</div><small>Last message</small><div class="preview-text">${escape(c.last)}</div></details><label class="field"><span>Use this project folder in T3</span><input type="text" data-root="${escape(id)}" value="${escape(c.destination)}"></label>${c.cwd!==c.root?`<label class="checkline"><input type="checkbox" data-recover="${escape(id)}" ${c.recoverWorkspace?'checked':''}><span>Copy files from the original workspace folder<small class="path">${escape(c.cwd)} → selected project folder</small><small>Copies all regular files in this folder. Existing files will not be overwritten. Git metadata, caches and symlinks are skipped.</small></span></label>`:'<small>Project files remain in their existing folder.</small>'}<h3 class="field">Chat uploads</h3>${c.assets.length?`<ul class="assets">${c.assets.map(a=>`<li>${a.error?`<strong>${escape(a.name)}</strong><small> · ${escape(a.error)}</small>`:`<label class="assetlabel"><input type="checkbox" data-asset="${escape(a.key)}" data-id="${escape(id)}" ${c.assetsSelected.has(a.key)?'checked':''}><span>${escape(a.name)}<small>${a.kind==='reference'?'File linked in the conversation':'Chat upload'} · ${bytes(a.sizeBytes)}</small>${a.path?`<small class="path">${escape(a.path)}</small>`:''}</span></label>`}</li>`).join('')}</ul>`:'<p>No recoverable chat uploads found. Files in the project folder stay available there.</p>'}</div></article>`).join(''):'<div class="empty"><h2>Choose a missing chat.</h2><p>Review its history and files here before preparing the import. Chats already in T3 are left unchanged.</p></div>';
-  reviews.querySelectorAll('[data-root]').forEach(input=>input.addEventListener('input',()=>selected.get(input.dataset.root).destination=input.value));
-  reviews.querySelectorAll('[data-recover]').forEach(input=>input.addEventListener('change',()=>selected.get(input.dataset.recover).recoverWorkspace=input.checked));
+  reviews.innerHTML=selected.size?[...selected.entries()].map(([id,c])=>c.loading?'<div class="empty">Reading the available conversation and files…</div>':`<article class="review-card" data-review="${escape(id)}"><div class="review-title"><h2>${escape(c.title)}</h2><span class="badge count">${c.messages} available messages · ${c.assets.filter(a=>!a.error).length} files available</span></div><div class="review-content"><details><summary>Check the conversation</summary><small>First message</small><div class="preview-text">${escape(c.first)}</div><small>Last message</small><div class="preview-text">${escape(c.last)}</div></details><label class="field"><span>Use this project folder in T3</span><input type="text" data-root="${escape(id)}" value="${escape(c.destination)}"></label><div data-recovery></div><h3 class="field">Chat uploads</h3>${c.assets.length?`<ul class="assets">${c.assets.map(a=>`<li>${a.error?`<strong>${escape(a.name)}</strong><small> · ${escape(a.error)}</small>`:`<label class="assetlabel"><input type="checkbox" data-asset="${escape(a.key)}" data-id="${escape(id)}" ${c.assetsSelected.has(a.key)?'checked':''}><span>${escape(a.name)}<small>${a.kind==='reference'?'File linked in the conversation':'Chat upload'} · ${bytes(a.sizeBytes)}</small>${a.path?`<small class="path">${escape(a.path)}</small>`:''}</span></label>`}</li>`).join('')}</ul>`:'<p>No recoverable chat uploads found. Files in the project folder stay available there.</p>'}</div></article>`).join(''):'<div class="empty"><h2>Choose a missing chat.</h2><p>Review its history and files here before preparing the import. Chats already in T3 are left unchanged.</p></div>';
+  reviews.querySelectorAll('[data-review]').forEach(card => {
+    const c = selected.get(card.dataset.review), input = card.querySelector('[data-root]');
+    renderRecovery(card, c);
+    input.addEventListener('input', () => {
+      c.destination = input.value;
+      renderRecovery(card, c);
+    });
+  });
   reviews.querySelectorAll('[data-asset]').forEach(input=>input.addEventListener('change',()=>{const c=selected.get(input.dataset.id);input.checked?c.assetsSelected.add(input.dataset.asset):c.assetsSelected.delete(input.dataset.asset);}));
   const missing=[...selected.values()].flatMap(c=>c.assets?.filter(a=>a.error&&a.kind==='upload')||[]);
   document.getElementById('missing').innerHTML=missing.length?`<div class="notice"><p>${missing.length} uploaded ${missing.length===1?'file is':'files are'} unavailable. They will be listed in the receipt.</p><label class="checkline"><input type="checkbox" id="accept-missing"><span>Continue with these missing files recorded.</span></label></div>`:'';
