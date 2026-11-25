@@ -51,12 +51,12 @@ export async function findApp(explicit) {
 }
 export async function servePicker({ codexHome = join(homedir(), '.codex'), t3Home = join(homedir(), '.t3'), days = 30,
   appPath, jobRoot, port = 0, openBrowser = true, directWorker = false, reopen = true } = {}) {
-  const index = await discoverCodex(codexHome, { days }), target = await inspectTarget(t3Home), app = await findApp(appPath);
+  const index = await discoverCodex(codexHome, { days }), target = await inspectTarget(t3Home), app = reopen ? await findApp(appPath) : null;
   if (reopen && !app) throw new Error('T3 Code was not found. Install and set up T3 0.1.12 first, or provide --app /path/to/T3.app.');
   if (reopen && target.home !== await realpath(join(homedir(), '.t3')).catch(() => null)) throw new Error('Automatic reopening supports the default ~/.t3 profile. For isolated profiles use --no-reopen and open the intended profile yourself.');
   const cache = new Map(), token = randomToken(); let preparing = false;
   const service = await startHttp(token, async (path, method, data) => {
-    if (path === '/api/state' && method === 'GET') return { mode: 'picker', version: target.version,
+    if (path === '/api/state' && method === 'GET') return { mode: 'picker', version: target.version, pathContext: { home: homedir(), cwd: process.cwd() },
       chats: index.chats.map(c => ({ id: c.id, title: c.title, root: c.root, cwd: c.cwd, updatedAt: c.updatedAt,
         assignment: c.assignment, archived: c.archived, existing: target.owners[c.id] || null })), projects: target.projects };
     if (path === '/api/preview' && method === 'POST') {
