@@ -5,12 +5,17 @@ import { zstdDecompressSync } from 'node:zlib';
 import { join, resolve, basename, extname, isAbsolute, relative, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { markdownLinkDestinations, parseMarkdownFileLink } from '../vendor/t3-v0.1.12.mjs';
 
 export const LIMITS = Object.freeze({ transcriptBytes: 128 * 1024 * 1024, metadataBytes: 32 * 1024 * 1024,
   sourceFiles: 20_000, workspaceFiles: 10_000, stagedBytes: 1024 * 1024 * 1024, forkDepth: 32 });
 export const hash = value => createHash('sha256').update(value).digest('hex');
 export const inside = (root, path) => { const r = relative(resolve(root), resolve(path)); return r === '' || (!r.startsWith('..' + sep) && r !== '..' && !isAbsolute(r)); };
 export const expand = value => resolve(value === '~' ? homedir() : value.startsWith('~/') ? join(homedir(), value.slice(2)) : value);
+function sourceFilePath(value, cwd) {
+  if (isAbsolute(value) || value === '~' || value.startsWith('~/')) return expand(value);
+  return cwd && isAbsolute(cwd) ? resolve(cwd, value) : null;
+}
 export const iso = (value, fallback = new Date().toISOString()) => { const n = typeof value === 'number' ? value * (value < 1e12 ? 1000 : 1) : value; const date = new Date(n); return Number.isFinite(date.getTime()) ? date.toISOString() : fallback; };
 
 async function bounded(path, limit) {
@@ -149,6 +154,29 @@ const assetContent = payload => {
   return refs.map(r => typeof r.value === 'string' ? r : { ...r, value: 'unavailable:' + (r.name || 'attachment') });
 };
 
+export function localFileLinks(text, cwd = '') {
+  return markdownLinkDestinations(text).flatMap(link => {
+    const target = parseMarkdownFileLink(link.href);
+    if (!target) return [];
+    const suffix = link.href.match(/[?#].*$/)?.[0] || (target.line ? `:${target.line}${target.column ? ':' + target.column : ''}${target.endLine ? '-' + target.endLine : ''}` : '');
+    const sourcePath = sourceFilePath(target.path, cwd);
+    return [{ ...link, value: target.path, sourcePath, suffix }];
+  });
+}
+
+export function projectFileHref(root, path) {
+  return './' + relative(root, path).split(sep).map(part => encodeURIComponent(part).replace(/[!'()*]/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase())).join('/');
+}
+
+export function rewriteFileLinks(text, cwd, recovered) {
+  let rewritten = text;
+  for (const link of localFileLinks(text, cwd).reverse()) {
+    const href = recovered.get(link.sourcePath);
+    if (href) rewritten = rewritten.slice(0, link.start) + href + link.suffix + rewritten.slice(link.end);
+  }
+  return rewritten;
+}
+
 export async function readConversation(chat, index) {
   const records = await recordsFor(chat, index);
   const meta = records.find(r => r.type === 'session_meta')?.payload || {};
@@ -187,18 +215,18 @@ export async function readConversation(chat, index) {
     const local = new Set();
     for (const ref of message.refs) {
       const key = hash(ref.value); if (local.has(key)) continue; local.add(key);
-      addAsset(await inspectAsset(ref, chat, messageIndex, key));
+      addAsset({ ...await inspectAsset(ref, chat, messageIndex, key), role: message.role });
     }
     // File links are offered as explicit recoverable references, never scraped as arbitrary paths.
-    for (const match of message.text.matchAll(/\[[^\]]*\]\((?:<([^>]+)>|([^\s)]+))\)/g)) {
-      const raw = match[1] || match[2];
-      let value; try { value = decodeURIComponent(raw.replace(/^file:\/\//, '')); } catch { continue; }
-      if (!isAbsolute(value) || local.has(hash(value))) continue;
-      local.add(hash(value)); addAsset(await inspectAsset({ value, kind: 'reference' }, chat, messageIndex, hash(value)));
+    for (const { value, sourcePath } of localFileLinks(message.text, chat.cwd)) {
+      const key = hash(sourcePath || value);
+      if (local.has(key)) continue;
+      local.add(key); addAsset({ ...await inspectAsset({ value, kind: 'reference' }, chat, messageIndex, key), role: message.role });
     }
   }
   for (const asset of assets) if (asset.error) warnings.push(`${asset.name}: ${asset.error}`);
-  return { ...chat, model, messages, assets, warnings, sourceHash: hash(JSON.stringify([records, assets.map(a => [a.key, a.sha256 || a.error])])), recordCount: records.length };
+  const origin = { id: chat.id, path: chat.path.replace(/\.zst$/, ''), cwd: chat.cwd, root: chat.root, title: chat.title, model, archived: chat.archived };
+  return { ...chat, model, messages, assets, warnings, sourceHash: hash(JSON.stringify([origin, records, assets.map(a => [a.key, a.sha256 || a.error])])), recordCount: records.length };
 }
 
 export async function inspectAsset(ref, chat, messageIndex, key) {
@@ -210,7 +238,8 @@ export async function inspectAsset(ref, chat, messageIndex, key) {
     if (data) { mime = data[1]; if (data[2].length > 70_000_000) throw new Error('Attachment exceeds the file safety limit.'); bytes = Buffer.from(data[2], 'base64'); }
     else {
       if (/^[a-z]+:\/\//i.test(ref.value) && !ref.value.startsWith('file://')) throw new Error('Remote attachment is not downloaded.');
-      const path = expand(ref.value.startsWith('file://') ? fileURLToPath(ref.value) : isAbsolute(ref.value) ? ref.value : join(chat.cwd, ref.value));
+      const path = sourceFilePath(ref.value.startsWith('file://') ? fileURLToPath(ref.value) : ref.value, chat.cwd);
+      if (!path) throw new Error('The original folder for this relative attachment is unknown.');
       result.path = path; result.name = ref.name || basename(path);
       if ((await lstat(path)).isSymbolicLink() || (await realpath(path)) !== resolve(path)) throw new Error('Symlink requires manual recovery.');
       bytes = await bounded(path, 50 * 1024 * 1024);
