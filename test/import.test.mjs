@@ -84,6 +84,85 @@ test('generated files remain openable through project links without changing the
   }
 });
 
+test('relative files retain their turn and inherited rollout folders', async t => {
+  for (const mode of ['turn-context', 'fork', 'parent-index', 'unknown-parent']) {
+    const f = await fixture(t), other = join(f.root, 'other-folder'); await mkdir(other);
+    for (const [folder, label] of [[f.scratch, 'parent'], [other, 'child']]) {
+      await writeFile(join(folder, 'report.html'), `${label}-report`);
+      await writeFile(join(folder, 'upload.txt'), `${label}-upload`);
+    }
+    const at = new Date().toISOString(), record = (type, payload) => ({ type, timestamp: at, payload });
+    const pack = records => records.map(JSON.stringify).join('\n') + '\n';
+    const segment = label => [
+      record('response_item', { type:'message', role:'user', content:[{type:'input_text', text:`${label} upload`}, {type:'input_file', path:'upload.txt'}] }),
+      record('response_item', { type:'message', role:'assistant', content:[{type:'output_text', text:`[${label} report](./report.html)`}] }),
+    ];
+    const parent = [record('session_meta', {id:f.id, ...(['parent-index','unknown-parent'].includes(mode) ? {} : {cwd:f.scratch})}), ...segment('parent')];
+    let id = f.id, path = f.path;
+    if (mode === 'turn-context') {
+      await writeFile(path, pack([...parent, record('turn_context', {cwd:other}), ...segment('child')]));
+    } else {
+      const prefix = pack(parent); await writeFile(f.path, prefix);
+      id = randomUUID(); path = join(dirname(f.path), `rollout-child-${id}.jsonl`);
+      await writeFile(path, pack([record('session_meta', {id, cwd:other, history_base:{thread_id:f.id, end_byte_offset:Buffer.byteLength(prefix)}}), ...segment('child')]));
+    }
+    if (mode === 'parent-index') {
+      const db = new DatabaseSync(join(f.source, 'state_5.sqlite'));
+      db.exec('CREATE TABLE threads(id TEXT,cwd TEXT,updated_at INTEGER,rollout_path TEXT)');
+      db.prepare('INSERT INTO threads VALUES(?,?,?,?)').run(f.id, f.scratch, 1, f.path);
+      db.prepare('INSERT INTO threads VALUES(?,?,?,?)').run(id, other, Math.floor(Date.now()/1000), path); db.close();
+    }
+    const original = hash(await readFile(path)), index = await discoverCodex(f.source);
+    const c = await readConversation(index.chats.find(chat => chat.id === id), index);
+    const options = {jobRoot:join(f.root, 'jobs')}, selection = {id, root:f.workspace, sourceHash:c.sourceHash, assets:c.assets.map(a => a.key)};
+    if (mode === 'parent-index') {
+      assert.equal(index.chats.some(chat => chat.id === f.id), false); // Parent is older than the picker window.
+      const db = new DatabaseSync(join(f.source, 'state_5.sqlite'));
+      db.prepare('UPDATE threads SET cwd=? WHERE id=?').run(other, f.id); db.close();
+      await assert.rejects(stageJob(index, f.target, [selection], options), /changed after preview/);
+      const restored = new DatabaseSync(join(f.source, 'state_5.sqlite'));
+      restored.prepare('UPDATE threads SET cwd=? WHERE id=?').run(f.scratch, f.id); restored.close();
+    }
+    const unknown = mode === 'unknown-parent';
+    assert.deepEqual(c.messages.map(m => m.cwd), [unknown ? '' : f.scratch, unknown ? '' : f.scratch, other, other]);
+    assert.deepEqual(c.assets.filter(a => !a.error).map(a => a.bytes.toString()), unknown ? ['child-upload','child-report'] : ['parent-upload','parent-report','child-upload','child-report']);
+    if (unknown) {
+      assert.equal(c.assets.filter(a => /original folder.*unknown/.test(a.error || '')).length, 2);
+      await assert.rejects(stageJob(index, f.target, [selection], options), /unavailable/);
+    }
+    const staged = await stageJob(index, f.target, [selection], {...options, acceptMissing:unknown});
+    const receipt = await applyJob(staged.path);
+    assert.equal(receipt.threads[0].messages, 4); assert.equal(receipt.missing.length, unknown ? 2 : 0);
+    const db = new DatabaseSync(staged.job.target.dbPath, {readOnly:true});
+    const messages = db.prepare("SELECT payload_json FROM orchestration_v2_projection_messages WHERE role='assistant' ORDER BY message_id").all().map(row => JSON.parse(row.payload_json).text); db.close();
+    for (const [i, text] of messages.entries()) {
+      if (unknown && i === 0) { assert.equal(text, '[parent report](./report.html)'); continue; }
+      const [link] = localFileLinks(text, f.workspace);
+      assert.equal(await readFile(link.sourcePath, 'utf8'), `${i === 0 ? 'parent' : 'child'}-report`);
+    }
+    assert.deepEqual(await Promise.all(staged.job.files.filter(file => file.kind === 'attachment').map(file => readFile(file.destination, 'utf8'))), unknown ? ['child-upload'] : ['parent-upload','child-upload']);
+    assert.equal(hash(await readFile(path)), original);
+  }
+});
+
+test('structured assistant files remain clickable before unfinished Markdown', async t => {
+  for (const body of ['Unfinished code:\n\n```js\nconst value = true;', '<!-- unfinished comment', '', '   ']) {
+    const f = await fixture(t), records = (await readFile(f.path,'utf8')).trim().split('\n').map(JSON.parse);
+    records.at(-1).payload.content = [{type:'output_text', text:body}, {type:'file', path:join(f.scratch,'brief.pdf'), filename:'report.pdf'}];
+    await writeFile(f.path, records.map(JSON.stringify).join('\n') + '\n');
+    const index = await discoverCodex(f.source), c = await readConversation(index.chats[0], index);
+    const staged = await stageJob(index, f.target, [{id:f.id, sourceHash:c.sourceHash}], {jobRoot:join(f.root,'jobs')});
+    await applyJob(staged.path);
+    const db = new DatabaseSync(staged.job.target.dbPath, {readOnly:true});
+    const text = JSON.parse(db.prepare("SELECT payload_json FROM orchestration_v2_projection_messages WHERE role='assistant'").get().payload_json).text; db.close();
+    assert.ok(text.startsWith('[report.pdf](')); assert.ok(text.endsWith(body));
+    const links = localFileLinks(text, f.workspace); assert.equal(links.length, 1);
+    assert.equal(hash(await readFile(links[0].sourcePath)), hash(await readFile(join(f.scratch,'brief.pdf'))));
+    const snapshot = JSON.parse(await readFile(join(staged.directory, `conversation-${f.id}.json`)));
+    assert.equal(snapshot.messages.at(-1).text, body);
+  }
+});
+
 test('verification failure rolls back the entire SQL transaction and removes only owned new files', async t => {
   const f = await fixture(t);
   const index = await discoverCodex(f.source);

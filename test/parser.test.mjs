@@ -59,10 +59,13 @@ test('mixed old agent events and response items preserve order and repeated equa
     {type:'event_msg',payload:{type:'agent_message',message:'older reply'}},
     {type:'event_msg',payload:{type:'user_message',message:'new question'}},
     {type:'response_item',payload:{type:'message',role:'assistant',content:[{type:'output_text',text:'new reply'}]}},
-    {type:'event_msg',payload:{type:'agent_message',message:'new reply'}}];
+    {type:'event_msg',payload:{type:'agent_message',message:'new reply'}},
+    {type:'response_item',payload:{type:'message',role:'assistant',content:[{type:'output_text',text:'same reply in another turn'}]}},
+    {type:'turn_context',payload:{cwd:f.workspace}},
+    {type:'event_msg',payload:{type:'agent_message',message:'same reply in another turn'}}];
   await writeFile(f.path,records.map(r=>JSON.stringify({...r,timestamp:time})).join('\n')+'\n');
   const index=await discoverCodex(f.source),c=await readConversation(index.chats[0],index);
-  assert.deepEqual(c.messages.map(m=>m.text),['yes','yes','older reply','new question','new reply']);
+  assert.deepEqual(c.messages.map(m=>m.text),['yes','yes','older reply','new question','new reply','same reply in another turn','same reply in another turn']);
 });
 
 test('unrecoverable uploads require acknowledgement; replaced bytes invalidate the preview',async t=>{
@@ -91,6 +94,12 @@ test('relative uploads need an original folder; absolute and inline uploads stil
   await assert.rejects(stageJob(index,f.target,[{id:f.id}],{jobRoot:join(f.root,'jobs')}),/unavailable/);
   const staged = await stageJob(index,f.target,[{id:f.id}],{jobRoot:join(f.root,'jobs'),acceptMissing:true});
   assert.equal(staged.job.files.length,2); assert.equal(staged.job.missing.length,1);
+  records[0].payload.cwd = f.scratch;
+  records.splice(1, 0, {type:'turn_context', payload:{cwd:'unknown-relative-folder'}});
+  await writeFile(f.path,records.map(JSON.stringify).join('\n')+'\n');
+  const changedIndex = await discoverCodex(f.source), changed = await readConversation(changedIndex.chats[0],changedIndex);
+  assert.match(changed.assets.find(a => a.name === 'unknown-relative.pdf').error,/original folder.*unknown/);
+  assert.equal(changed.assets.filter(a => !a.error).length,2);
 });
 
 test('a physically renamed project requires the current path, while explicit blank paths are refused',async t=>{
