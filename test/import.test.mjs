@@ -145,6 +145,32 @@ test('relative files retain their turn and inherited rollout folders', async t =
   }
 });
 
+test('inherited rollouts reject mismatched identities but allow an empty prefix', async t => {
+  const f = await fixture(t), records = (await readFile(f.path,'utf8')).trim().split('\n').map(JSON.parse);
+  records[0].payload.id = randomUUID();
+  const parent = records.map(JSON.stringify).join('\n') + '\n'; await writeFile(f.path,parent);
+  const id = randomUUID(), path = join(dirname(f.path), `rollout-child-${id}.jsonl`), at = new Date().toISOString();
+  const child = [
+    {type:'session_meta',payload:{id,cwd:f.scratch,history_base:{thread_id:f.id,end_byte_offset:Buffer.byteLength(parent)}}},
+    {type:'event_msg',timestamp:at,payload:{type:'user_message',message:'Child question'}},
+    {type:'event_msg',timestamp:at,payload:{type:'agent_message',message:'Child answer'}},
+  ];
+  const saveChild = () => writeFile(path,child.map(JSON.stringify).join('\n')+'\n'); await saveChild();
+  const index = await discoverCodex(f.source), meta = index.chats.find(chat => chat.id === id);
+  await assert.rejects(readConversation(index.chats.find(chat => chat.id === f.id),index), /session ID disagree/);
+  await assert.rejects(readConversation(meta,index), /session ID disagree/);
+  const options = {jobRoot:join(f.root,'jobs')};
+  await assert.rejects(stageJob(index,f.target,[{id,assets:[]}],options), /session ID disagree/);
+  assert.equal((await inspectTarget(f.target)).owners[id],undefined);
+  child[0].payload.history_base.end_byte_offset = 0; await saveChild();
+  const c = await readConversation(meta,index);
+  assert.deepEqual(c.messages.map(m => m.text), ['Child question','Child answer']);
+  const staged = await stageJob(index,f.target,[{id,assets:[],sourceHash:c.sourceHash}],options);
+  const receipt = await applyJob(staged.path);
+  assert.equal(receipt.threads[0].messages,2); assert.equal(receipt.threads[0].history,'verified');
+  assert.equal(await readFile(f.path,'utf8'),parent);
+});
+
 test('structured assistant files remain clickable before unfinished Markdown', async t => {
   for (const body of ['Unfinished code:\n\n```js\nconst value = true;', '<!-- unfinished comment', '', '   ']) {
     const f = await fixture(t), records = (await readFile(f.path,'utf8')).trim().split('\n').map(JSON.parse);

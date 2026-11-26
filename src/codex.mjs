@@ -131,6 +131,8 @@ async function recordsFor(chat, index, seen = new Set(), bytes = { total: 0 }, e
     try { records.push(JSON.parse(line)); } catch { throw new Error(`Unreadable transcript record ${lineIndex + 1}: ${chat.path}`); }
   }
   const meta = records.find(r => r.type === 'session_meta')?.payload || {};
+  // A zero-byte inherited prefix has no parent records to validate.
+  if (endByteOffset !== 0 && (meta.id || meta.session_id) !== chat.id) throw new Error('The chat index and transcript session ID disagree.');
   const base = meta.history_base;
   if (base?.thread_id === chat.id) throw new Error('Same-thread rewind history is not supported. No partial history was imported.');
   let parent = [];
@@ -189,7 +191,6 @@ export function rewriteFileLinks(text, cwd, recovered) {
 export async function readConversation(chat, index) {
   const records = await recordsFor(chat, index);
   const meta = records.find(({ record }) => record.type === 'session_meta')?.record.payload || {};
-  if ((meta.id || meta.session_id) !== chat.id) throw new Error('The chat index and transcript session ID disagree.');
   chat = { ...chat, cwd: chat.cwd || meta.cwd || '', root: chat.root || meta.cwd || '' };
   const messages = [], warnings = [];
   let model = chat.model;
