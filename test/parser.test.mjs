@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile, writeFile, rm, rename, readdir } from 'node:fs/promises';
-import { join, dirname } from 'node:path';
+import { readFile, writeFile, rm, rename, readdir, mkdir } from 'node:fs/promises';
+import { join, dirname, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { zstdCompressSync } from 'node:zlib';
@@ -17,9 +17,16 @@ test('Codex database project assignment takes precedence over stale desktop meta
   db.prepare('INSERT INTO threads VALUES(?,?,?,?,?)').run(f.id,'p',f.scratch,Math.floor(Date.now()/1000),f.path);
   db.prepare('INSERT INTO project_roots VALUES(?,?,?)').run('p',f.scratch,0);db.close();
   const index=await discoverCodex(f.source);
+  const preview=await readConversation(index.chats[0],index);
   assert.equal(index.chats[0].root,f.scratch);assert.equal(index.chats[0].assignment,'database');
   await writeFile(f.path+'.zst',zstdCompressSync(await readFile(f.path)));await rm(f.path);
-  assert.equal((await discoverCodex(f.source)).chats.length,1);
+  const compressed=await discoverCodex(f.source);
+  assert.equal(compressed.chats.length,1);
+  assert.equal((await readConversation(compressed.chats[0],compressed)).sourceHash,preview.sourceHash);
+  const other=join(f.root,'other-workspace');await mkdir(other);await writeFile(join(other,'unselected.txt'),'Must not be copied');
+  const changed=new DatabaseSync(join(f.source,'state_5.sqlite'));
+  changed.prepare('UPDATE threads SET cwd=? WHERE id=?').run(other,f.id);changed.close();
+  await assert.rejects(stageJob(index,f.target,[{id:f.id,sourceHash:preview.sourceHash,root:f.workspace,recoverWorkspace:true}],{jobRoot:join(f.root,'jobs')}),/changed after preview/);
 });
 
 test('reads a compressed fork with an inherited byte prefix and rejects incomplete boundaries',async t=>{
@@ -69,6 +76,23 @@ test('unrecoverable uploads require acknowledgement; replaced bytes invalidate t
   assert.equal(job.job.missing.length,1);assert.equal(job.job.files.length,1);
 });
 
+test('relative uploads need an original folder; absolute and inline uploads still recover', async t => {
+  const f = await fixture(t), records = (await readFile(f.path,'utf8')).trim().split('\n').map(JSON.parse);
+  delete records[0].payload.cwd;
+  records.find(r => r.payload?.type === 'user_message').payload.local_images = [];
+  const content = records.find(r => r.type === 'response_item' && r.payload.role === 'user').payload.content;
+  content.push({ type:'input_file', path:relative(process.cwd(),join(f.scratch,'brief.pdf')), filename:'unknown-relative.pdf' },
+    { type:'input_file', file_data:'data:text/plain;base64,aW5saW5l', filename:'inline.txt' });
+  await writeFile(f.path,records.map(JSON.stringify).join('\n')+'\n');
+  const index = await discoverCodex(f.source), c = await readConversation(index.chats[0],index);
+  assert.equal(c.cwd,''); assert.equal(c.root,f.workspace);
+  assert.match(c.assets.find(a => a.name === 'unknown-relative.pdf').error,/original folder.*unknown/);
+  assert.equal(c.assets.filter(a => !a.error).length,2);
+  await assert.rejects(stageJob(index,f.target,[{id:f.id}],{jobRoot:join(f.root,'jobs')}),/unavailable/);
+  const staged = await stageJob(index,f.target,[{id:f.id}],{jobRoot:join(f.root,'jobs'),acceptMissing:true});
+  assert.equal(staged.job.files.length,2); assert.equal(staged.job.missing.length,1);
+});
+
 test('a physically renamed project requires the current path, while explicit blank paths are refused',async t=>{
   const f=await fixture(t);const moved=f.workspace+'-renamed';await rename(f.workspace,moved);
   const index=await discoverCodex(f.source);
@@ -114,9 +138,11 @@ test('same-thread rewinds refuse the whole lineage instead of importing discarde
   const meta=extra=>({type:'session_meta',payload:{id:f.id,cwd:f.scratch,...extra}}),user=message=>({type:'event_msg',payload:{type:'user_message',message}});
   const kept=pack([meta({}),user('keep this')]);
   await writeFile(f.path,kept+pack([user('discarded by rewind')]));
+  const cached = await discoverCodex(f.source), preview = await readConversation(cached.chats[0],cached);
   const current=f.path.replace('.jsonl','_'+randomUUID()+'.jsonl');
   await writeFile(current,pack([meta({history_base:{thread_id:f.id,end_byte_offset:Buffer.byteLength(kept)}}),user('replacement')]));
   const options={jobRoot:join(f.root,'jobs')};
+  await assert.rejects(stageJob(cached,f.target,[{id:f.id,sourceHash:preview.sourceHash}],options),/rewound or ambiguous/);
   await assert.rejects(stageJob(await discoverCodex(f.source),f.target,[{id:f.id}],options),/rewound or ambiguous/);
   const db=new DatabaseSync(join(f.source,'state_5.sqlite'));db.exec('CREATE TABLE threads(id TEXT,rollout_path TEXT,updated_at INTEGER)');
   db.prepare('INSERT INTO threads VALUES(?,?,?)').run(f.id,current,Math.floor(Date.now()/1000));db.close();

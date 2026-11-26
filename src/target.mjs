@@ -247,7 +247,7 @@ export async function applyJob(jobPath, { waitMs = 20 * 60_000, onStatus = async
     await status('verifying', 'Checking imported messages, file hashes, and session bindings.');
     const threads = await verifyJob(job);
     const result = { format: 'threadlift-receipt-v1', importedAt: new Date().toISOString(), threads, files: job.files.length,
-      fileCounts: Object.fromEntries(['attachment','workspace'].map(kind => [kind, job.files.filter(f => f.kind === kind).length])),
+      fileCounts: Object.fromEntries(['attachment','linked','workspace'].map(kind => [kind, job.files.filter(f => f.kind === kind).length])), linkedFiles: job.linkedFiles || [],
       missing: job.missing, skipped: job.skipped, backupPath: journal.backupPath, sourceUnchanged: true,
       continuation: 'Original session IDs and working folders verified; this import does not send a live follow-up.' };
     await atomicJson(join(jobDir, 'receipt.json'), result);

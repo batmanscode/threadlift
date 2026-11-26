@@ -12,6 +12,20 @@ import * as Sink from '@upstream/apps/server/src/orchestration-v2/EventSink.ts';
 import * as Store from '@upstream/apps/server/src/orchestration-v2/EventStore.ts';
 import * as Projections from '@upstream/apps/server/src/orchestration-v2/ProjectionStore.ts';
 import * as Runtime from '@upstream/apps/server/src/persistence/ProviderSessionRuntime.ts';
+import { parse, postprocess, preprocess } from 'micromark';
+import { decodeString } from 'micromark-util-decode-string';
+export { parseMarkdownFileLink, resolveMarkdownFileLinkTarget } from '@t3tools/shared/markdownLinks';
+
+// Reuse the Markdown tokenizer already bundled by T3. Destination offsets let
+// recovery change links without reformatting messages, code samples or labels.
+export function markdownLinkDestinations(text: string) {
+  if (!text.includes('](') && !text.includes(']:')) return [];
+  const events = postprocess(parse().document().write(preprocess()(text, undefined, true)));
+  return events.flatMap(([phase, token, context]) =>
+    phase === 'enter' && ['resourceDestinationString', 'definitionDestinationString'].includes(token.type)
+      ? [{ start: token.start.offset, end: token.end.offset, href: decodeString(context.sliceSerialize(token)) }]
+      : []);
+}
 
 export const upstream = Object.freeze({ version: '0.1.12', commit: 'ca81b7b97a1c4b91e5ac25768d0f6629f37732fd' });
 export function providerThreadId(instanceId: string, nativeId: string) {

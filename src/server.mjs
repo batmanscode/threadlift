@@ -60,15 +60,16 @@ export async function servePicker({ codexHome = join(homedir(), '.codex'), t3Hom
       chats: index.chats.map(c => ({ id: c.id, title: c.title, root: c.root, cwd: c.cwd, updatedAt: c.updatedAt,
         assignment: c.assignment, archived: c.archived, existing: target.owners[c.id] || null })), projects: target.projects };
     if (path === '/api/preview' && method === 'POST') {
-      const meta = index.chats.find(c => c.id === data.id); if (!meta) throw new Error('Chat not found.');
-      const c = await readConversation(meta, index); cache.set(c.id, c.sourceHash);
+      const current = await discoverCodex(index.codexHome, { days: 0 });
+      const meta = current.chats.find(c => c.id === data.id); if (!meta) throw new Error('Chat not found. Rescan first.');
+      const c = await readConversation(meta, current); cache.set(c.id, c.sourceHash);
       return { id: c.id, title: c.title, sourceHash: c.sourceHash, cwd: c.cwd, root: c.root, messages: c.messages.length,
         first: c.messages[0]?.text.slice(0,500), last: c.messages.at(-1)?.text.slice(0,500), warnings: c.warnings,
         assets: c.assets.map(({ bytes, value, ...asset }) => asset) };
     }
     if (path === '/api/prepare' && method === 'POST') {
       if (preparing) throw new Error('An import is already being prepared.');
-      if (!Array.isArray(data.selections) || data.selections.some(s => !cache.has(s.id))) throw new Error('Preview each selected chat first.');
+      if (!Array.isArray(data.selections) || data.selections.some(s => !s || !cache.has(s.id) || cache.get(s.id) !== s.sourceHash)) throw new Error('Preview each selected chat again before preparing.');
       preparing = true;
       try {
         const staged = await stageJob(index, target.home, data.selections, { jobRoot, acceptMissing: data.acceptMissing === true });
