@@ -1,6 +1,6 @@
 {
   "name": "threadlift",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "description": "Recover selected local Codex chats and files into T3 Code.",
   "type": "module",

@@ -16,6 +16,7 @@ function sourceFilePath(value, cwd) {
   if (isAbsolute(value) || value === '~' || value.startsWith('~/')) return expand(value);
   return cwd && isAbsolute(cwd) ? resolve(cwd, value) : null;
 }
+const recordedCwd = value => typeof value === 'string' && isAbsolute(value) ? value : '';
 export const iso = (value, fallback = new Date().toISOString()) => { const n = typeof value === 'number' ? value * (value < 1e12 ? 1000 : 1) : value; const date = new Date(n); return Number.isFinite(date.getTime()) ? date.toISOString() : fallback; };
 
 async function bounded(path, limit) {
@@ -57,6 +58,7 @@ export async function discoverCodex(codexHome, { days = 30 } = {}) {
     }
   } catch (e) { throw new Error(`Cannot read the Codex index safely: ${e.message}`); }
   finally { db?.close(); }
+  const cwds = new Map([...rows].map(([id, row]) => [id, recordedCwd(row.cwd)]));
   const global = await jsonFile(join(codexHome, '.codex-global-state.json'));
   const names = new Map();
   try { for (const line of String(await bounded(join(codexHome, 'session_index.jsonl'), LIMITS.metadataBytes)).split('\n')) {
@@ -106,7 +108,7 @@ export async function discoverCodex(codexHome, { days = 30 } = {}) {
       model: row.model || null, createdAt: row.created_at ? iso(row.created_at) : meta.timestamp || updatedAt, updatedAt,
       archived: Boolean(row.archived), compressed: path.endsWith('.zst'), codexHome });
   }
-  return { codexHome, chats: chats.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)), paths, unsupported };
+  return { codexHome, chats: chats.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)), paths, cwds, unsupported };
 }
 
 async function recordsFor(chat, index, seen = new Set(), bytes = { total: 0 }, endByteOffset) {
@@ -137,11 +139,18 @@ async function recordsFor(chat, index, seen = new Set(), bytes = { total: 0 }, e
       throw new Error('Inherited history requires a valid byte boundary. No partial history was imported.');
     const parentPath = index.paths.get(base.thread_id);
     if (!parentPath) throw new Error(`Inherited Codex history is missing: ${base.thread_id}`);
-    parent = await recordsFor({ ...chat, id: base.thread_id, path: parentPath }, index, seen, bytes, base.end_byte_offset);
+    parent = await recordsFor({ id: base.thread_id, path: parentPath, codexHome: chat.codexHome }, index, seen, bytes, base.end_byte_offset);
   } else if (meta.forked_from_id && !records.some(r => r.type === 'response_item' && r.payload?.role === 'user')) {
     throw new Error('Fork history lacks an explicit history_base; refusing an incomplete import.');
   }
-  return [...parent.filter(r => r.type !== 'session_meta'), ...records];
+  // Keep each rollout's folder with its records when flattening inherited history.
+  // An explicitly unknown turn folder must not fall back to another turn's folder.
+  let cwd = recordedCwd(Object.hasOwn(meta, 'cwd') ? meta.cwd : index.cwds.get(chat.id));
+  const own = records.map(record => {
+    if (record.type === 'turn_context' && Object.hasOwn(record.payload || {}, 'cwd')) cwd = recordedCwd(record.payload.cwd);
+    return { record, cwd };
+  });
+  return [...parent.filter(({ record }) => record.type !== 'session_meta'), ...own];
 }
 const textContent = content => typeof content === 'string' ? content : Array.isArray(content) ? content.filter(b => ['text', 'input_text', 'output_text'].includes(b.type)).map(b => b.text || '').join('\n') : '';
 const assetContent = payload => {
@@ -179,29 +188,30 @@ export function rewriteFileLinks(text, cwd, recovered) {
 
 export async function readConversation(chat, index) {
   const records = await recordsFor(chat, index);
-  const meta = records.find(r => r.type === 'session_meta')?.payload || {};
+  const meta = records.find(({ record }) => record.type === 'session_meta')?.record.payload || {};
   if ((meta.id || meta.session_id) !== chat.id) throw new Error('The chat index and transcript session ID disagree.');
   chat = { ...chat, cwd: chat.cwd || meta.cwd || '', root: chat.root || meta.cwd || '' };
   const messages = [], warnings = [];
   let model = chat.model;
-  const add = (role, text, record, refs, response = false) => {
+  const add = (role, text, { record, cwd }, refs, response = false) => {
     if (!text.trim() && refs.length === 0) return;
     // Pair the two representations one-to-one within a same-role segment.
     // Repeated identical user turns remain distinct; old agent events keep order.
     const boundary = messages.findLast(m => m.role !== role)?.ordinal ?? -1;
-    const duplicate = messages.findLast(m => m.ordinal > boundary && m.role === role && m.text.trim() === text.trim() && m.response !== response && !m.paired);
+    const duplicate = messages.findLast(m => m.ordinal > boundary && m.role === role && m.cwd === cwd && m.text.trim() === text.trim() && m.response !== response && !m.paired);
     if (duplicate) { duplicate.refs.push(...refs); duplicate.paired = true; return; }
-    messages.push({ ordinal: messages.length, role, text, createdAt: iso(record.timestamp, chat.createdAt), refs, response });
+    messages.push({ ordinal: messages.length, role, text, cwd, createdAt: iso(record.timestamp, chat.createdAt), refs, response });
   };
-  for (const record of records) {
+  for (const entry of records) {
+    const { record } = entry;
     const p = record.payload || {};
     if (record.type === 'turn_context' && p.model) model = p.model;
     if (['thread_rolled_back', 'thread_rollback', 'rewind'].includes(p.type) || ['thread_rolled_back', 'thread_rollback', 'rewind'].includes(record.type))
       throw new Error('This transcript contains an unsupported rewind record; no partial history will be imported.');
-    if (record.type === 'event_msg' && p.type === 'agent_message') add('assistant', p.message || '', record, [], false);
-    if (record.type === 'event_msg' && p.type === 'user_message') add('user', p.message || '', record, assetContent(p));
+    if (record.type === 'event_msg' && p.type === 'agent_message') add('assistant', p.message || '', entry, [], false);
+    if (record.type === 'event_msg' && p.type === 'user_message') add('user', p.message || '', entry, assetContent(p));
     if (record.type === 'response_item' && p.type === 'message' && p.role === 'user' && /^\s*(?:# AGENTS\.md instructions for |<environment_context>|<permissions instructions>|<user_instructions>|<in-app-browser-context(?:\s|>))/.test(textContent(p.content))) continue;
-    if (record.type === 'response_item' && p.type === 'message' && ['user', 'assistant'].includes(p.role)) add(p.role, textContent(p.content), record, assetContent(p), true);
+    if (record.type === 'response_item' && p.type === 'message' && ['user', 'assistant'].includes(p.role)) add(p.role, textContent(p.content), entry, assetContent(p), true);
   }
   if (!messages.length) throw new Error('No supported conversation messages found.');
   const assets = [];
@@ -213,15 +223,16 @@ export async function readConversation(chat, index) {
   };
   for (const [messageIndex, message] of messages.entries()) {
     const local = new Set();
+    const source = { ...chat, cwd: message.cwd };
     for (const ref of message.refs) {
       const key = hash(ref.value); if (local.has(key)) continue; local.add(key);
-      addAsset({ ...await inspectAsset(ref, chat, messageIndex, key), role: message.role });
+      addAsset({ ...await inspectAsset(ref, source, messageIndex, key), role: message.role });
     }
     // File links are offered as explicit recoverable references, never scraped as arbitrary paths.
-    for (const { value, sourcePath } of localFileLinks(message.text, chat.cwd)) {
+    for (const { value, sourcePath } of localFileLinks(message.text, message.cwd)) {
       const key = hash(sourcePath || value);
       if (local.has(key)) continue;
-      local.add(key); addAsset({ ...await inspectAsset({ value, kind: 'reference' }, chat, messageIndex, key), role: message.role });
+      local.add(key); addAsset({ ...await inspectAsset({ value, kind: 'reference' }, source, messageIndex, key), role: message.role });
     }
   }
   for (const asset of assets) if (asset.error) warnings.push(`${asset.name}: ${asset.error}`);

@@ -86,7 +86,7 @@ export async function stageJob(index, t3Home, selections, { jobRoot = defaultJob
       let sourceBase = paths.length ? dirname(paths[0]) : '';
       for (const path of paths) while (!inside(sourceBase, path)) sourceBase = dirname(sourceBase);
       const recoveredByMessage = new Map(), extraByMessage = new Map();
-      const messageLinks = conversation.messages.map(message => new Set(localFileLinks(message.text, conversation.cwd).map(link => link.sourcePath)));
+      const messageLinks = conversation.messages.map(message => new Set(localFileLinks(message.text, message.cwd).map(link => link.sourcePath)));
       for (const asset of conversation.assets) {
         if (!chosen.has(asset.key)) { job.skipped.push({ chat: conversation.title, file: asset.name, reason: 'not selected' }); continue; }
         if (asset.error) { job.missing.push({ chat: conversation.title, file: asset.name, reason: asset.error }); continue; }
@@ -126,8 +126,8 @@ export async function stageJob(index, t3Home, selections, { jobRoot = defaultJob
       }
       const messages = conversation.messages.map((message, index) => {
         const recovered = recoveredByMessage.get(index), extra = extraByMessage.get(index);
-        let text = recovered ? rewriteFileLinks(message.text, conversation.cwd, recovered) : message.text;
-        if (extra) text += (text.trim() ? '\n\n' : '') + [...extra.values()].join('\n');
+        let text = recovered ? rewriteFileLinks(message.text, message.cwd, recovered) : message.text;
+        if (extra) text = [...extra.values()].join('\n') + (text ? '\n\n' + text : '');
         return { ...message, text };
       });
       job.batch.threads.push(makeThread({ ...conversation, messages }, projectId, root, attachments, defaults));
