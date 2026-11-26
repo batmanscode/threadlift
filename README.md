@@ -105,7 +105,20 @@ npm run build:adapter
 npm test
 ```
 
-The build verifies upstream commit `ca81b7b97a1c4b91e5ac25768d0f6629f37732fd`. Tests create isolated Codex/T3 profiles; never point development servers or write tests at a real profile. The first release was also checked against the official T3 0.1.12 server and web client: earlier history and attachment downloads worked, and a real Codex session continued with its remembered context and read a copied file from the selected project folder. Generated-file recovery was checked with synthetic HTML, an image, a PDF and a ZIP after removing the original files: T3 rendered the HTML and companion image, displayed the chat image, browsed the archive, and served the PDF with identical bytes. The in-app test browser did not render the PDF preview. The desktop app was not installed for these tests, so its normal quit and automatic relaunch were not exercised. This is evidence for the tested paths, not every possible Codex history or provider configuration.
+The build verifies upstream commit `ca81b7b97a1c4b91e5ac25768d0f6629f37732fd`. Tests create isolated Codex/T3 profiles; never point development servers or write tests at a real profile.
+
+### Verification
+
+Recorded automated baseline: Threadlift `0.1.5` ([`0bd4d93`](https://github.com/batmanscode/threadlift/commit/0bd4d938b16714e988ab50dcdca065a81f619e36)) with pinned T3 Code `0.1.12` fixtures.
+
+| Area | Status | Evidence and limits |
+| --- | --- | --- |
+| Automated suite (`npm test`) | 27 tests passed, 2026-11-26 | Local and CI runs on isolated synthetic profiles using the native T3 writer, projection readback and file hashes. Covers history/file fidelity, source and existing-chat protection, locking, rollback, crash/retry, and origin/rewind/identity refusal. |
+| Official T3 `0.1.12` server and web client | Checked in an earlier release | Earlier history and upload downloads worked; a dedicated Codex test session continued with remembered context and read a copied workspace file. |
+| Generated-file recovery in the T3 `0.1.12` web client | Earlier synthetic check | With the original files removed, HTML and its relative companion image rendered, the chat image rendered, the ZIP was browsable, and the PDF served identical `application/pdf` bytes. The in-app test browser's PDF preview was blank; visual PDF rendering was not confirmed. |
+| macOS desktop `.app` handoff | **Not tested** | The desktop app was not installed during these checks. Actual `Cmd+Q` → independent worker → import/verify → automatic reopen has not been exercised. |
+
+The historical client checks were not rerun for every subsequent patch. This evidence covers the tested paths, not every possible Codex history, provider configuration, or future T3 version.
 
 A compatibility update needs an upstream writer build, schema fixture, full-history/file checks, existing-chat protection, failure recovery, and a real-client pass.
 
