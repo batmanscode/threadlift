@@ -27,9 +27,11 @@ try {
       console.log(`Threadlift is ready. Private browser link (keep it local):\n${service.url}`);
     } else if (command === 'inspect') {
       const index = await discoverCodex(codexHome,{ days: options.days === undefined ? 30 : Number(options.days) }), target = await inspectTarget(t3Home);
+      const chats = index.chats.filter(c => !c.isHelper);
       console.log(JSON.stringify({ t3Version:target.version, databaseFormat:target.formatVersion, warnings:target.warnings,
-        ...(options.details ? { chats:index.chats.map(({id,title,root,cwd,assignment}) => ({id,title,root,cwd,assignment,alreadyInT3:Boolean(target.owners[id])})) }
-          : { chatsFound:index.chats.length,alreadyInT3:index.chats.filter(c=>target.owners[c.id]).length,unsupportedHistories:index.unsupported.size }) },null,2));
+        helperSessionsExcluded:index.chats.length-chats.length+index.unavailableChats.filter(c=>c.isHelper).length,
+        ...(options.details ? { chats:chats.map(({id,title,root,cwd,assignment}) => ({id,title,root,cwd,assignment,alreadyInT3:Boolean(target.owners[id])})) }
+          : { chatsFound:chats.length,alreadyInT3:chats.filter(c=>target.owners[c.id]).length,unsupportedHistories:index.unsupported.size }) },null,2));
     } else if (command === 'worker') await runWorker(options.job,{label:options.label,launchId:options['launch-id']});
     else if (command === 'apply') {
       if (!options.job) throw new Error('Provide --job /absolute/path/job.json');

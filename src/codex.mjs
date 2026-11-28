@@ -1,7 +1,8 @@
-import { readFile, readdir, lstat, realpath, open } from 'node:fs/promises';
+import { readFile, readdir, lstat, realpath } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
-import { zstdDecompressSync } from 'node:zlib';
+import { zstdDecompressSync, createZstdDecompress } from 'node:zlib';
 import { join, resolve, basename, extname, isAbsolute, relative, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -40,6 +41,36 @@ async function walk(path, output = []) {
 }
 function uuidInPath(path) {
   return /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:_[0-9a-f-]{36})?\.jsonl(?:\.zst)?$/i.exec(path)?.[1];
+}
+function helperSource(source) {
+  if (typeof source === 'string') {
+    try { source = JSON.parse(source); } catch {}
+  }
+  return source === 'subagent' || Boolean(source && typeof source === 'object' && !Array.isArray(source) &&
+    (Object.hasOwn(source, 'subagent') || Object.hasOwn(source, 'subAgent')));
+}
+async function sessionMetadata(path) {
+  const input = createReadStream(path), stream = path.endsWith('.zst') ? createZstdDecompress() : input;
+  if (stream !== input) { input.once('error', error => stream.destroy(error)); input.pipe(stream); }
+  const parts = []; let size = 0;
+  try {
+    for await (const chunk of stream) {
+      const newline = chunk.indexOf(10), part = newline < 0 ? chunk : chunk.subarray(0, newline);
+      if ((size += part.length) > LIMITS.metadataBytes) throw new Error('Session metadata exceeds the safety limit.');
+      parts.push(part); if (newline >= 0) break;
+    }
+    try {
+      const record = JSON.parse(Buffer.concat(parts).toString('utf8'));
+      return record.type === 'session_meta' ? record.payload || {} : {};
+    } catch { return {}; }
+  } finally { input.destroy(); if (stream !== input) stream.destroy(); }
+}
+const savedTitle = value => typeof value === 'string' && value.trim() ? value.trim() : null;
+const injectedUserText = /^\s*(?:# AGENTS\.md instructions for |<environment_context>|<permissions instructions>|<user_instructions>|<in-app-browser-context(?:\s|>))/;
+const titlePreamble = /^(?:\s*(?:<(recommended_plugins|environment_context|permissions instructions|user_instructions|INSTRUCTIONS|in-app-browser-context|external_codex_apps_open_page)(?:\s[^>]*)?>[\s\S]*?<\/\1>|# AGENTS\.md instructions\b[^\n]*|## My request(?: for Codex)?:))+/;
+function fallbackTitle(messages) {
+  const text = messages.filter(m => m.role === 'user').map(m => m.text.replace(titlePreamble, '').trim()).find(text => text && !injectedUserText.test(text));
+  return text ? [...text.trim().split(/\r?\n/)[0].replace(/\s+/g, ' ')].slice(0, 100).join('') : 'Untitled Codex chat';
 }
 
 export async function discoverCodex(codexHome, { days = 30 } = {}) {
@@ -86,35 +117,27 @@ export async function discoverCodex(codexHome, { days = 30 } = {}) {
   const chats = [], unavailable = new Map();
   for (const [id, path] of paths) {
     const row = rows.get(id) || {};
-    const title = names.get(id) || row.title || 'Unavailable Codex chat';
-    const inaccessible = error => unavailable.set(id, { id, title, error: `Cannot read this transcript (${error.code || error.message}). Restore access and rescan.` });
+    const title = savedTitle(global['thread-titles']?.titles?.[id]) || names.get(id) || savedTitle(row.title);
+    const inaccessible = error => unavailable.set(id, { id, title: title || 'Unavailable Codex chat', isHelper: helperSource(row.source), error: `Cannot read this transcript (${error.code || error.message}). Restore access and rescan.` });
     let stat;
     try { stat = await lstat(path); } catch (error) { inaccessible(error); continue; }
     if (!stat.isFile() || stat.isSymbolicLink()) { inaccessible(new Error('not a regular file')); continue; }
     const updatedAt = row.updated_at ? iso(row.updated_at) : stat.mtime.toISOString();
     if (days > 0 && Date.parse(updatedAt) < Date.now() - days * 86400_000) continue;
-    let meta = {};
-    if (!path.endsWith('.zst')) {
-      try {
-      const file = await open(path, 'r');
-      try { const buffer = Buffer.alloc(Math.min(stat.size, 65536)); const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
-        const first = buffer.subarray(0, bytesRead).toString().split('\n')[0];
-        try { const r = JSON.parse(first); if (r.type === 'session_meta') meta = r.payload || {}; } catch {}
-      } finally { await file.close(); }
-      } catch (error) { inaccessible(error); continue; }
-    }
+    let meta;
+    try { meta = await sessionMetadata(path); } catch (error) { inaccessible(error); continue; }
     const assignment = global['thread-project-assignments']?.[id];
     const project = assignment?.projectKind === 'local' && typeof assignment.projectId === 'string' ? global['local-projects']?.[assignment.projectId] : undefined;
     const desktopRoot = Array.isArray(project?.rootPaths) ? project.rootPaths.find(p => typeof p === 'string' && isAbsolute(p) && p.trim()) : undefined;
     const cwd = row.cwd || meta.cwd || '';
     const root = sqliteRoots.get(id) || desktopRoot || cwd;
-    chats.push({ id, path, title: names.get(id) || row.title || 'Untitled Codex chat', cwd, root,
+    chats.push({ id, path, title: title || 'Untitled Codex chat', savedTitle: Boolean(title), isHelper: helperSource(meta.source ?? row.source), cwd, root,
       projectTitle: project?.name || basename(root) || 'No project', assignment: sqliteRoots.has(id) ? 'database' : desktopRoot ? 'Codex desktop' : 'original folder',
       model: row.model || null, createdAt: row.created_at ? iso(row.created_at) : meta.timestamp || updatedAt, updatedAt,
       archived: Boolean(row.archived), compressed: path.endsWith('.zst'), codexHome });
   }
   for (const id of [...unsupported].filter(id => !paths.has(id))) unavailable.set(id, { id,
-    title: names.get(id) || rows.get(id)?.title || 'Unavailable Codex chat',
+    title: savedTitle(global['thread-titles']?.titles?.[id]) || names.get(id) || savedTitle(rows.get(id)?.title) || 'Unavailable Codex chat', isHelper: helperSource(rows.get(id)?.source),
     error: 'The indexed active transcript is missing. No older branch was used instead.' });
   const unavailableChats = [...unavailable.values()];
   return { codexHome, chats: chats.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)), paths, cwds, unsupported, unavailableChats };
@@ -200,7 +223,7 @@ export function rewriteFileLinks(text, cwd, recovered) {
 export async function readConversation(chat, index) {
   const records = await recordsFor(chat, index);
   const meta = records.find(({ record }) => record.type === 'session_meta')?.record.payload || {};
-  chat = { ...chat, cwd: chat.cwd || meta.cwd || '', root: chat.root || meta.cwd || '' };
+  chat = { ...chat, cwd: chat.cwd || meta.cwd || '', root: chat.root || meta.cwd || '', isHelper: meta.source == null ? chat.isHelper : helperSource(meta.source) };
   const messages = [], warnings = [];
   let model = chat.model;
   const add = (role, text, { record, cwd }, refs, response = false) => {
@@ -220,10 +243,11 @@ export async function readConversation(chat, index) {
       throw new Error('This transcript contains an unsupported rewind record; no partial history will be imported.');
     if (record.type === 'event_msg' && p.type === 'agent_message') add('assistant', p.message || '', entry, [], false);
     if (record.type === 'event_msg' && p.type === 'user_message') add('user', p.message || '', entry, assetContent(p));
-    if (record.type === 'response_item' && p.type === 'message' && p.role === 'user' && /^\s*(?:# AGENTS\.md instructions for |<environment_context>|<permissions instructions>|<user_instructions>|<in-app-browser-context(?:\s|>))/.test(textContent(p.content))) continue;
+    if (record.type === 'response_item' && p.type === 'message' && p.role === 'user' && injectedUserText.test(textContent(p.content))) continue;
     if (record.type === 'response_item' && p.type === 'message' && ['user', 'assistant'].includes(p.role)) add(p.role, textContent(p.content), entry, assetContent(p), true);
   }
   if (!messages.length) throw new Error('No supported conversation messages found.');
+  if (!chat.savedTitle && !chat.isHelper) chat.title = fallbackTitle(messages);
   const assets = [];
   let assetBytes = 0;
   const addAsset = asset => {
