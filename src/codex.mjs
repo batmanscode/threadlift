@@ -2,13 +2,13 @@ import { readFile, readdir, lstat, realpath } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
-import { zstdDecompressSync, createZstdDecompress } from 'node:zlib';
+import { createZstdDecompress } from 'node:zlib';
 import { join, resolve, basename, extname, isAbsolute, relative, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { markdownLinkDestinations, parseMarkdownFileLink } from '../vendor/t3.mjs';
 
-export const LIMITS = Object.freeze({ transcriptBytes: 128 * 1024 * 1024, metadataBytes: 32 * 1024 * 1024,
+export const LIMITS = Object.freeze({ recordBytes: 128 * 1024 * 1024, conversationBytes: 256 * 1024 * 1024, conversationRecords: 100_000, metadataBytes: 32 * 1024 * 1024,
   sourceFiles: 20_000, workspaceFiles: 10_000, stagedBytes: 1024 * 1024 * 1024, batchHistoryBytes: 256 * 1024 * 1024, forkDepth: 32 });
 export const hash = value => createHash('sha256').update(value).digest('hex');
 export const inside = (root, path) => { const r = relative(resolve(root), resolve(path)); return r === '' || (!r.startsWith('..' + sep) && r !== '..' && !isAbsolute(r)); };
@@ -143,48 +143,103 @@ export async function discoverCodex(codexHome, { days = 30 } = {}) {
   return { codexHome, chats: chats.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)), paths, cwds, unsupported, unavailableChats };
 }
 
-async function recordsFor(chat, index, seen = new Set(), bytes = { total: 0 }, endByteOffset) {
+// Decode one JSONL record at a time. Prefix offsets refer to decompressed bytes.
+// Hash even discarded tool records so a changed source still invalidates preview.
+async function streamRecords(path, endByteOffset, onRecord) {
+  const stat = await lstat(path);
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`Not a regular source file: ${path}`);
+  if (endByteOffset !== undefined && (!Number.isSafeInteger(endByteOffset) || endByteOffset < 0)) throw new Error('Invalid inherited history byte boundary.');
+  const digest = createHash('sha256');
+  if (endByteOffset === 0) return { sha256: digest.digest('hex'), count: 0 };
+  const input = createReadStream(path), stream = path.endsWith('.zst') ? createZstdDecompress() : input;
+  if (stream !== input) { input.once('error', error => stream.destroy(error)); input.pipe(stream); }
+  const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+  let parts = [], size = 0, total = 0, lastByte = -1, line = 0, count = 0;
+  function emit() {
+    line++;
+    let text = decoder.decode(parts.length === 1 ? parts[0] : Buffer.concat(parts));
+    parts = []; size = 0;
+    if (line === 1) text = text.replace(/^\uFEFF/, '');
+    if (!text.trim()) return;
+    let record;
+    try { record = JSON.parse(text); } catch { throw new Error(`Unreadable transcript record ${line}: ${path}`); }
+    count++; onRecord(record);
+  }
+  try {
+    for await (let chunk of stream) {
+      if (endByteOffset !== undefined) chunk = chunk.subarray(0, Math.min(chunk.length, endByteOffset - total));
+      total += chunk.length; lastByte = chunk.at(-1); digest.update(chunk);
+      let start = 0;
+      while (start < chunk.length) {
+        const newline = chunk.indexOf(10, start), part = newline < 0 ? chunk.subarray(start) : chunk.subarray(start, newline);
+        if ((size += part.length) > LIMITS.recordBytes) throw new Error(`One transcript record exceeds the 128 MiB parsing limit: ${path}. No messages were truncated.`);
+        if (part.length) parts.push(part);
+        if (newline < 0) break;
+        emit(); start = newline + 1;
+      }
+      if (endByteOffset !== undefined && total === endByteOffset) break;
+    }
+    if (endByteOffset !== undefined) {
+      if (total !== endByteOffset) throw new Error('Invalid inherited history byte boundary.');
+      if (lastByte !== 10) throw new Error('Inherited history ends inside a JSON record.');
+    } else if (size) emit();
+    return { sha256: digest.digest('hex'), count };
+  } finally {
+    input.unpipe(); input.on('error', () => {}); input.destroy();
+    if (stream !== input) { stream.on('error', () => {}); stream.destroy(); }
+  }
+}
+
+async function recordsFor(chat, index, seen = new Set(), budget = { bytes: 0, count: 0 }, endByteOffset) {
   if (index.unsupported?.has(chat.id)) throw new Error('This chat has rewound or ambiguous rollout history. No partial history was imported.');
   if (seen.has(chat.id) || seen.size >= LIMITS.forkDepth) throw new Error('Cyclic or excessively deep Codex history.');
   seen.add(chat.id);
   if (!inside(chat.codexHome, await realpath(chat.path))) throw new Error('Transcript escapes the selected Codex home.');
-  let data = await bounded(chat.path, LIMITS.transcriptBytes);
-  if (chat.path.endsWith('.zst')) data = zstdDecompressSync(data, { maxOutputLength: LIMITS.transcriptBytes });
-  if (endByteOffset !== undefined) {
-    if (!Number.isSafeInteger(endByteOffset) || endByteOffset < 0 || endByteOffset > data.length) throw new Error('Invalid inherited history byte boundary.');
-    data = data.subarray(0, endByteOffset);
-    if (data.length && data.at(-1) !== 10) throw new Error('Inherited history ends inside a JSON record.');
+  const records = []; let metadata, hasUser = false, metaCount = 0;
+  function reserve(record) {
+    budget.bytes += Buffer.byteLength(JSON.stringify(record)); budget.count++;
+    if (budget.bytes > LIMITS.conversationBytes || budget.count > LIMITS.conversationRecords)
+      throw new Error('Retained conversation content exceeds the 256 MiB or 100,000-record memory limit; no messages were truncated.');
   }
-  bytes.total += data.length;
-  if (bytes.total > LIMITS.transcriptBytes) throw new Error('Selected conversation exceeds the transcript safety limit; no messages were truncated.');
-  const records = [];
-  for (const [lineIndex, line] of new TextDecoder('utf-8', { fatal: true }).decode(data).split('\n').entries()) {
-    if (!line.trim()) continue;
-    try { records.push(JSON.parse(line)); } catch { throw new Error(`Unreadable transcript record ${lineIndex + 1}: ${chat.path}`); }
-  }
-  const meta = records.find(r => r.type === 'session_meta')?.payload || {};
+  const source = await streamRecords(chat.path, endByteOffset, record => {
+    const p = record.payload || {};
+    if (['thread_rolled_back', 'thread_rollback', 'rewind'].includes(p.type) || ['thread_rolled_back', 'thread_rollback', 'rewind'].includes(record.type))
+      throw new Error('This transcript contains an unsupported rewind record; no partial history will be imported.');
+    if (record.type === 'session_meta') { if (!metadata) { reserve(record); metadata = record; } metaCount++; return; }
+    if (record.type === 'response_item' && p.role === 'user') hasUser = true;
+    let kept;
+    if (record.type === 'turn_context') kept = { type: record.type, payload: { ...(Object.hasOwn(p, 'cwd') ? { cwd: p.cwd } : {}), ...(p.model ? { model: p.model } : {}) } };
+    if (record.type === 'event_msg' && ['user_message', 'agent_message'].includes(p.type)) kept = record;
+    if (record.type === 'response_item' && p.type === 'message' && ['user', 'assistant'].includes(p.role)) kept = record;
+    if (!kept) return;
+    reserve(kept);
+    records.push(kept);
+  });
+  const meta = metadata?.payload || {};
   // A zero-byte inherited prefix has no parent records to validate.
   if (endByteOffset !== 0 && (meta.id || meta.session_id) !== chat.id) throw new Error('The chat index and transcript session ID disagree.');
   const base = meta.history_base;
   if (base?.thread_id === chat.id) throw new Error('Same-thread rewind history is not supported. No partial history was imported.');
-  let parent = [];
+  let parent = { entries: [], segments: [], count: 0, metaCount: 0 };
   if (base !== undefined) {
     if (!base || typeof base.thread_id !== 'string' || !Number.isSafeInteger(base.end_byte_offset) || base.end_byte_offset < 0)
       throw new Error('Inherited history requires a valid byte boundary. No partial history was imported.');
     const parentPath = index.paths.get(base.thread_id);
     if (!parentPath) throw new Error(`Inherited Codex history is missing: ${base.thread_id}`);
-    parent = await recordsFor({ id: base.thread_id, path: parentPath, codexHome: chat.codexHome }, index, seen, bytes, base.end_byte_offset);
-  } else if (meta.forked_from_id && !records.some(r => r.type === 'response_item' && r.payload?.role === 'user')) {
+    parent = await recordsFor({ id: base.thread_id, path: parentPath, codexHome: chat.codexHome }, index, seen, budget, base.end_byte_offset);
+  } else if (meta.forked_from_id && !hasUser) {
     throw new Error('Fork history lacks an explicit history_base; refusing an incomplete import.');
   }
   // Keep each rollout's folder with its records when flattening inherited history.
   // An explicitly unknown turn folder must not fall back to another turn's folder.
   let cwd = recordedCwd(Object.hasOwn(meta, 'cwd') ? meta.cwd : index.cwds.get(chat.id));
+  const initialCwd = cwd;
   const own = records.map(record => {
     if (record.type === 'turn_context' && Object.hasOwn(record.payload || {}, 'cwd')) cwd = recordedCwd(record.payload.cwd);
     return { record, cwd };
   });
-  return [...parent.filter(({ record }) => record.type !== 'session_meta'), ...own];
+  return { meta, entries: [...parent.entries, ...own], segments: [...parent.segments, [chat.id, endByteOffset ?? null, source.sha256, initialCwd]],
+    count: parent.count - parent.metaCount + source.count, metaCount };
 }
 const textContent = content => typeof content === 'string' ? content : Array.isArray(content) ? content.filter(b => ['text', 'input_text', 'output_text'].includes(b.type)).map(b => b.text || '').join('\n') : '';
 const assetContent = payload => {
@@ -221,8 +276,7 @@ export function rewriteFileLinks(text, cwd, recovered) {
 }
 
 export async function readConversation(chat, index) {
-  const records = await recordsFor(chat, index);
-  const meta = records.find(({ record }) => record.type === 'session_meta')?.record.payload || {};
+  const { entries: records, meta, segments, count } = await recordsFor(chat, index);
   chat = { ...chat, cwd: chat.cwd || meta.cwd || '', root: chat.root || meta.cwd || '', isHelper: meta.source == null ? chat.isHelper : helperSource(meta.source) };
   const messages = [], warnings = [];
   let model = chat.model;
@@ -239,8 +293,6 @@ export async function readConversation(chat, index) {
     const { record } = entry;
     const p = record.payload || {};
     if (record.type === 'turn_context' && p.model) model = p.model;
-    if (['thread_rolled_back', 'thread_rollback', 'rewind'].includes(p.type) || ['thread_rolled_back', 'thread_rollback', 'rewind'].includes(record.type))
-      throw new Error('This transcript contains an unsupported rewind record; no partial history will be imported.');
     if (record.type === 'event_msg' && p.type === 'agent_message') add('assistant', p.message || '', entry, [], false);
     if (record.type === 'event_msg' && p.type === 'user_message') add('user', p.message || '', entry, assetContent(p));
     if (record.type === 'response_item' && p.type === 'message' && p.role === 'user' && injectedUserText.test(textContent(p.content))) continue;
@@ -271,7 +323,7 @@ export async function readConversation(chat, index) {
   }
   for (const asset of assets) if (asset.error) warnings.push(`${asset.name}: ${asset.error}`);
   const origin = { id: chat.id, path: chat.path.replace(/\.zst$/, ''), cwd: chat.cwd, root: chat.root, title: chat.title, model, archived: chat.archived };
-  return { ...chat, model, messages, assets, warnings, sourceHash: hash(JSON.stringify([origin, records, assets.map(a => [a.key, a.sha256 || a.error])])), recordCount: records.length };
+  return { ...chat, model, messages, assets, warnings, sourceHash: hash(JSON.stringify([origin, segments, assets.map(a => [a.key, a.sha256 || a.error])])), recordCount: count };
 }
 
 export async function inspectAsset(ref, chat, messageIndex, key) {
