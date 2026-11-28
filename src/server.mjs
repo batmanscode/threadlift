@@ -6,9 +6,9 @@ import { execFile, execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { discoverCodex, readConversation, hash, expand } from './codex.mjs';
-import { inspectTarget, applyJob, atomicJson, readAppVersion, versionWarnings } from './target.mjs';
+import { inspectTarget, atomicJson, readAppVersion, versionWarnings } from './target.mjs';
 import { jobLock } from './recovery.mjs';
-import { stageJob } from './stage.mjs';
+import { stageJobs, applyJobs } from './jobs.mjs';
 
 const web = new URL('../web/', import.meta.url), cli = fileURLToPath(new URL('../bin/threadlift.mjs', import.meta.url));
 const randomToken = () => randomBytes(32).toString('hex');
@@ -18,7 +18,7 @@ function authorized(header, token) {
 }
 async function body(req) {
   const chunks = []; let size = 0;
-  for await (const b of req) { if ((size += b.length) > 65536) throw new Error('Request is too large.'); chunks.push(b); }
+  for await (const b of req) { if ((size += b.length) > 1024 * 1024) throw new Error('Request is too large.'); chunks.push(b); }
   return JSON.parse(Buffer.concat(chunks).toString() || '{}');
 }
 export function startHttp(token, route, port = 0) {
@@ -51,33 +51,55 @@ export async function findApp(explicit) {
 }
 export async function servePicker({ codexHome = join(homedir(), '.codex'), t3Home = join(homedir(), '.t3'), days = 30,
   appPath, jobRoot, port = 0, openBrowser = true, directWorker = false, reopen = true } = {}) {
-  const index = await discoverCodex(codexHome, { days }), target = await inspectTarget(t3Home), app = reopen ? await findApp(appPath) : null;
+  let index = await discoverCodex(codexHome, { days }), target = await inspectTarget(t3Home), scanId = randomUUID(), scanDays = days;
+  const app = reopen ? await findApp(appPath) : null;
   if (reopen && !app) throw new Error(`T3 Code was not found. Install and set up T3 ${target.version} first, or provide --app /path/to/T3.app.`);
   const appVersion = app ? readAppVersion(app, target.formatVersion) : null;
   const warnings = [...new Set([...target.warnings, ...(appVersion ? versionWarnings(appVersion, target.formatVersion) : [])])];
   if (!appVersion && !target.version) warnings.push(`T3’s installed version is unknown. This profile matches the tested ${target.formatVersion} database format.`);
   if (reopen && target.home !== await realpath(join(homedir(), '.t3')).catch(() => null)) throw new Error('Automatic reopening supports the default ~/.t3 profile. For isolated profiles use --no-reopen and open the intended profile yourself.');
-  const cache = new Map(), token = randomToken(); let preparing = false;
-  const service = await startHttp(token, async (path, method, data) => {
-    if (path === '/api/state' && method === 'GET') return { mode: 'picker', version: appVersion || target.version, formatVersion: target.formatVersion, warnings, pathContext: { home: homedir(), cwd: process.cwd() },
+  const cache = new Map(), previewFailures = new Map(), token = randomToken(); let preparing = false;
+  const pickerState = () => ({ mode: 'picker', version: appVersion || target.version, formatVersion: target.formatVersion, warnings, scanId, scanDays,
+      pathContext: { home: homedir(), cwd: process.cwd() }, unavailableChats: index.unavailableChats.filter(c => !target.owners[c.id]),
       chats: index.chats.map(c => ({ id: c.id, title: c.title, root: c.root, cwd: c.cwd, updatedAt: c.updatedAt,
-        assignment: c.assignment, archived: c.archived, existing: target.owners[c.id] || null })), projects: target.projects };
+        assignment: c.assignment, archived: c.archived, existing: target.owners[c.id] || null })), projects: target.projects });
+  const service = await startHttp(token, async (path, method, data) => {
+    if (path === '/api/state' && method === 'GET') return pickerState();
+    if (path === '/api/scan' && method === 'POST') {
+      if (preparing) throw new Error('An import is already being prepared.');
+      index = await discoverCodex(index.codexHome, { days: 0 }); target = await inspectTarget(target.home);
+      cache.clear(); previewFailures.clear();
+      scanDays = 0; scanId = randomUUID(); return pickerState();
+    }
     if (path === '/api/preview' && method === 'POST') {
-      const current = await discoverCodex(index.codexHome, { days: 0 });
+      try {
+      const current = data.scanId === scanId ? index : await discoverCodex(index.codexHome, { days: 0 });
       const meta = current.chats.find(c => c.id === data.id); if (!meta) throw new Error('Chat not found. Rescan first.');
       const c = await readConversation(meta, current); cache.set(c.id, c.sourceHash);
+      previewFailures.delete(c.id);
+      const folder = c.root || c.cwd;
+      const folderError = !folder ? 'Choose the current project folder.' : !(await lstat(folder).catch(() => null))?.isDirectory() ? 'The recorded folder is missing. Choose its current location.' : null;
       return { id: c.id, title: c.title, sourceHash: c.sourceHash, cwd: c.cwd, root: c.root, messages: c.messages.length,
+        folderError,
         first: c.messages[0]?.text.slice(0,500), last: c.messages.at(-1)?.text.slice(0,500), warnings: c.warnings,
         assets: c.assets.map(({ bytes, value, ...asset }) => asset) };
+      } catch (error) {
+        previewFailures.set(data.id, { id: data.id, title: index.chats.find(c => c.id === data.id)?.title || 'Unavailable Codex chat', error: error.message });
+        throw error;
+      }
     }
     if (path === '/api/prepare' && method === 'POST') {
       if (preparing) throw new Error('An import is already being prepared.');
       if (!Array.isArray(data.selections) || data.selections.some(s => !s || !cache.has(s.id) || cache.get(s.id) !== s.sourceHash)) throw new Error('Preview each selected chat again before preparing.');
+      const omittedIds = data.omittedChats || [], failures = new Map([...previewFailures, ...index.unavailableChats.map(c => [c.id, c])]);
+      if (!Array.isArray(omittedIds) || omittedIds.some(id => typeof id !== 'string' || !failures.has(id) || data.selections.some(s => s.id === id))) throw new Error('Invalid omitted-chat list. Rescan before importing.');
+      if (omittedIds.length && data.acceptOmitted !== true) throw new Error('Review and acknowledge the chats that could not be selected.');
       preparing = true;
       try {
-        const staged = await stageJob(index, target.home, data.selections, { jobRoot, acceptMissing: data.acceptMissing === true });
+        const staged = await stageJobs(index, target.home, data.selections, { jobRoot, acceptMissing: data.acceptMissing === true });
         staged.job.browserToken = randomToken(); staged.job.appPath = app; staged.job.reopen = reopen;
         staged.job.compatibilityWarnings = [...new Set([...staged.job.compatibilityWarnings, ...warnings])];
+        staged.job.omittedChats = [...new Set(omittedIds)].map(id => failures.get(id));
         await atomicJson(staged.path, staged.job);
         const worker = directWorker ? await runWorker(staged.path, { cleanupMs: 120_000 }) : await launchWorker(staged.path);
         setTimeout(() => service.server.close(), 250);
@@ -129,7 +151,7 @@ export async function launchWorker(jobPath) {
 }
 export async function runWorker(jobPath, { label, launchId, cleanupMs = 10*60_000, waitMs } = {}) {
   jobPath = await realpath(jobPath); const dir = dirname(jobPath), job = JSON.parse(await readFile(jobPath,'utf8'));
-  if (job.format !== 'threadlift-job-v1' || !/^[a-f0-9]{64}$/.test(job.browserToken || '')) throw new Error('Invalid prepared job.');
+  if (!['threadlift-job-v1', 'threadlift-queue-v1'].includes(job.format) || !/^[a-f0-9]{64}$/.test(job.browserToken || '')) throw new Error('Invalid prepared job.');
   const gateDirectory = join(homedir(), 'Library/Application Support/Threadlift/worker-locks', hash(job.target.home));
   let service, releaseGate;
   try {
@@ -137,7 +159,7 @@ export async function runWorker(jobPath, { label, launchId, cleanupMs = 10*60_00
     releaseGate = jobLock(gateDirectory);
     service = await startHttp(job.browserToken, async (path, method) => {
       if (path === '/api/state' && method === 'GET') return { mode: 'progress', sources: job.sources,
-        status: JSON.parse(await readFile(join(dir,'status.json'),'utf8')), warnings: job.compatibilityWarnings || [], directory: dir, autoReopen: job.reopen === true };
+        status: JSON.parse(await readFile(join(dir,'status.json'),'utf8')), warnings: job.compatibilityWarnings || [], batchCount: job.jobs?.length || 1, directory: dir, autoReopen: job.reopen === true };
       throw new Error('This import is already prepared.');
     });
     await atomicJson(join(dir,'worker.json'), { pid: process.pid, url: service.url.split('#')[0], launchId });
@@ -148,7 +170,7 @@ export async function runWorker(jobPath, { label, launchId, cleanupMs = 10*60_00
   }
   const completion = (async () => {
     try {
-      await applyJob(jobPath, { waitMs });
+      await applyJobs(jobPath, { waitMs });
       const status = JSON.parse(await readFile(join(dir,'status.json'),'utf8'));
       if (job.reopen && job.appPath) {
         try { readAppVersion(job.appPath, job.target.formatVersion || job.target.version); execFileSync('/usr/bin/open',['-a',job.appPath]); status.detail = 'Import verified. T3 was asked to reopen. You can close this tab and open your imported chat.'; }

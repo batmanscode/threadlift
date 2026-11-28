@@ -188,10 +188,11 @@ function hasImportEvidence(job, target) {
   } finally { db.close(); }
 }
 
-export async function applyJob(jobPath, { waitMs = 20 * 60_000, onStatus = async () => {}, failAfterWrite = false, afterCommit, afterFile } = {}) {
+export async function applyJob(jobPath, { waitMs = 20 * 60_000, onStatus = async () => {}, failAfterWrite = false, afterCommit, afterFile, appPath, expectedTarget } = {}) {
   const jobDir = dirname(await realpath(jobPath)), statusPath = join(jobDir, 'status.json');
   const job = JSON.parse(await readFile(jobPath, 'utf8'));
   if (job.format !== 'threadlift-job-v1') throw new Error('Unsupported recovery job.');
+  if (expectedTarget && (job.target.home !== expectedTarget.home || job.target.fingerprint !== expectedTarget.fingerprint)) throw new Error('Prepared batches disagree about their target.');
   const unlockJob = jobLock(jobDir);
   const status = async (phase, detail, extra = {}) => { const value = { phase, detail, updatedAt: new Date().toISOString(), ...extra }; await atomicJson(statusPath, value); await onStatus(value); };
   const journalPath = join(jobDir, 'journal.json');
@@ -215,7 +216,8 @@ export async function applyJob(jobPath, { waitMs = 20 * 60_000, onStatus = async
     }
     const target = await inspectTarget(job.target.home);
     if (target.fingerprint !== job.target.fingerprint) throw new Error('The T3 format changed after review. Rescan before importing.');
-    const appVersion = job.reopen && job.appPath ? readAppVersion(job.appPath, target.formatVersion) : null;
+    const selectedApp = appPath || (job.reopen && job.appPath);
+    const appVersion = selectedApp ? readAppVersion(selectedApp, target.formatVersion) : null;
     job.compatibilityWarnings = [...new Set([...(job.compatibilityWarnings || []), ...target.warnings,
       ...(appVersion ? versionWarnings(appVersion, target.formatVersion) : [])])];
     const owned = job.batch.threads.map(t => target.owners[t.sourceId]);

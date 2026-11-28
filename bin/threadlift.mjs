@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
-import { readFile } from 'node:fs/promises';
+import { readFile, realpath } from 'node:fs/promises';
 import { servePicker, runWorker } from '../src/server.mjs';
 import { discoverCodex } from '../src/codex.mjs';
-import { inspectTarget, applyJob } from '../src/target.mjs';
+import { inspectTarget, atomicJson } from '../src/target.mjs';
+import { applyJobs } from '../src/jobs.mjs';
 
 try {
   const args = process.argv.slice(2), command = args[0]?.startsWith('-') ? 'open' : args.shift() || 'open', options = {};
@@ -30,7 +31,12 @@ try {
         ...(options.details ? { chats:index.chats.map(({id,title,root,cwd,assignment}) => ({id,title,root,cwd,assignment,alreadyInT3:Boolean(target.owners[id])})) }
           : { chatsFound:index.chats.length,alreadyInT3:index.chats.filter(c=>target.owners[c.id]).length,unsupportedHistories:index.unsupported.size }) },null,2));
     } else if (command === 'worker') await runWorker(options.job,{label:options.label,launchId:options['launch-id']});
-    else if (command === 'apply') { if (!options.job) throw new Error('Provide --job /absolute/path/job.json'); console.log(JSON.stringify(await applyJob(options.job),null,2)); }
+    else if (command === 'apply') {
+      if (!options.job) throw new Error('Provide --job /absolute/path/job.json');
+      const result = await applyJobs(options.job);
+      await atomicJson(join(dirname(await realpath(options.job)), 'status.json'), { phase: 'complete', detail: 'Import finished. Open T3 when ready.', updatedAt: new Date().toISOString(), result });
+      console.log(JSON.stringify(result,null,2));
+    }
     else if (command === 'status') { if (!options.job) throw new Error('Provide --job /absolute/path/job.json'); console.log(await readFile(join(dirname(options.job),'status.json'),'utf8')); }
     else throw new Error(`Unknown command: ${command}`);
   }

@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { markdownLinkDestinations, parseMarkdownFileLink } from '../vendor/t3.mjs';
 
 export const LIMITS = Object.freeze({ transcriptBytes: 128 * 1024 * 1024, metadataBytes: 32 * 1024 * 1024,
-  sourceFiles: 20_000, workspaceFiles: 10_000, stagedBytes: 1024 * 1024 * 1024, forkDepth: 32 });
+  sourceFiles: 20_000, workspaceFiles: 10_000, stagedBytes: 1024 * 1024 * 1024, batchHistoryBytes: 256 * 1024 * 1024, forkDepth: 32 });
 export const hash = value => createHash('sha256').update(value).digest('hex');
 export const inside = (root, path) => { const r = relative(resolve(root), resolve(path)); return r === '' || (!r.startsWith('..' + sep) && r !== '..' && !isAbsolute(r)); };
 export const expand = value => resolve(value === '~' ? homedir() : value.startsWith('~/') ? join(homedir(), value.slice(2)) : value);
@@ -83,20 +83,25 @@ export async function discoverCodex(codexHome, { days = 30 } = {}) {
     if (active) paths.set(row.id, active);
     else unsupported.add(row.id); // Never replace a missing active branch with an older rollout.
   }
-  const chats = [];
+  const chats = [], unavailable = new Map();
   for (const [id, path] of paths) {
     const row = rows.get(id) || {};
-    const stat = await lstat(path).catch(() => null);
-    if (!stat?.isFile() || stat.isSymbolicLink()) continue;
+    const title = names.get(id) || row.title || 'Unavailable Codex chat';
+    const inaccessible = error => unavailable.set(id, { id, title, error: `Cannot read this transcript (${error.code || error.message}). Restore access and rescan.` });
+    let stat;
+    try { stat = await lstat(path); } catch (error) { inaccessible(error); continue; }
+    if (!stat.isFile() || stat.isSymbolicLink()) { inaccessible(new Error('not a regular file')); continue; }
     const updatedAt = row.updated_at ? iso(row.updated_at) : stat.mtime.toISOString();
     if (days > 0 && Date.parse(updatedAt) < Date.now() - days * 86400_000) continue;
     let meta = {};
     if (!path.endsWith('.zst')) {
+      try {
       const file = await open(path, 'r');
       try { const buffer = Buffer.alloc(Math.min(stat.size, 65536)); const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
         const first = buffer.subarray(0, bytesRead).toString().split('\n')[0];
         try { const r = JSON.parse(first); if (r.type === 'session_meta') meta = r.payload || {}; } catch {}
       } finally { await file.close(); }
+      } catch (error) { inaccessible(error); continue; }
     }
     const assignment = global['thread-project-assignments']?.[id];
     const project = assignment?.projectKind === 'local' && typeof assignment.projectId === 'string' ? global['local-projects']?.[assignment.projectId] : undefined;
@@ -108,7 +113,11 @@ export async function discoverCodex(codexHome, { days = 30 } = {}) {
       model: row.model || null, createdAt: row.created_at ? iso(row.created_at) : meta.timestamp || updatedAt, updatedAt,
       archived: Boolean(row.archived), compressed: path.endsWith('.zst'), codexHome });
   }
-  return { codexHome, chats: chats.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)), paths, cwds, unsupported };
+  for (const id of [...unsupported].filter(id => !paths.has(id))) unavailable.set(id, { id,
+    title: names.get(id) || rows.get(id)?.title || 'Unavailable Codex chat',
+    error: 'The indexed active transcript is missing. No older branch was used instead.' });
+  const unavailableChats = [...unavailable.values()];
+  return { codexHome, chats: chats.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)), paths, cwds, unsupported, unavailableChats };
 }
 
 async function recordsFor(chat, index, seen = new Set(), bytes = { total: 0 }, endByteOffset) {
