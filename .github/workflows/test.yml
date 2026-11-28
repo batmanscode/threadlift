@@ -15,7 +15,8 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: git clone --depth 1 --branch v0.1.12 https://github.com/pingdotgg/t3code.git work/t3code
+      - run: git clone --depth 1 --branch v0.1.12 https://github.com/pingdotgg/t3code.git work/t3code-v0.1.12
+      - run: git clone --depth 1 --branch v0.1.13 https://github.com/pingdotgg/t3code.git work/t3code-v0.1.13
       - run: npm run build:adapter
       - run: npm test
       - run: git diff --exit-code -- vendor/

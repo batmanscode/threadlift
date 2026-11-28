@@ -1,6 +1,6 @@
 {
   "name": "threadlift",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "description": "Recover selected local Codex chats and files into T3 Code.",
   "type": "module",
@@ -12,7 +12,7 @@
     "threadlift": "bin/threadlift.mjs"
   },
   "scripts": {
-    "test": "node --test test/*.test.mjs",
+    "test": "node scripts/test.mjs",
     "build:adapter": "node scripts/build-t3-adapter.mjs"
   },
   "devDependencies": {

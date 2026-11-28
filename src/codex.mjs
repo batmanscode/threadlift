@@ -5,7 +5,7 @@ import { zstdDecompressSync } from 'node:zlib';
 import { join, resolve, basename, extname, isAbsolute, relative, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { markdownLinkDestinations, parseMarkdownFileLink } from '../vendor/t3-v0.1.12.mjs';
+import { markdownLinkDestinations, parseMarkdownFileLink } from '../vendor/t3.mjs';
 
 export const LIMITS = Object.freeze({ transcriptBytes: 128 * 1024 * 1024, metadataBytes: 32 * 1024 * 1024,
   sourceFiles: 20_000, workspaceFiles: 10_000, stagedBytes: 1024 * 1024 * 1024, forkDepth: 32 });

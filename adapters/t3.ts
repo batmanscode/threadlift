@@ -14,6 +14,7 @@ import * as Projections from '@upstream/apps/server/src/orchestration-v2/Project
 import * as Runtime from '@upstream/apps/server/src/persistence/ProviderSessionRuntime.ts';
 import { parse, postprocess, preprocess } from 'micromark';
 import { decodeString } from 'micromark-util-decode-string';
+import releases from './t3-releases.json';
 export { parseMarkdownFileLink, resolveMarkdownFileLinkTarget } from '@t3tools/shared/markdownLinks';
 
 // Reuse the Markdown tokenizer already bundled by T3. Destination offsets let
@@ -27,7 +28,8 @@ export function markdownLinkDestinations(text: string) {
       : []);
 }
 
-export const upstream = Object.freeze({ version: '0.1.12', commit: 'ca81b7b97a1c4b91e5ac25768d0f6629f37732fd' });
+export const upstream = Object.freeze(releases.at(-1)!);
+export const supportedVersions = Object.freeze(releases.map(r => r.version));
 export function providerThreadId(instanceId: string, nativeId: string) {
   return derive.providerThread({ driver: 'codex', providerInstanceId: instanceId, nativeThreadId: nativeId });
 }

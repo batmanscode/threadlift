@@ -2,7 +2,7 @@
 
 Bring missing Codex chats—and their files—into T3 Code.
 
-Threadlift is a local recovery helper for **macOS, T3 Code 0.1.12, and the default Codex instance (`codex`)**. It handles the case where a Codex chat started without a project, was later moved into one, and never appeared in T3's import. Use T3's normal setup/import first.
+Threadlift is a local recovery helper for **macOS and the default Codex instance (`codex`)**, tested with **T3 Code 0.1.12 and 0.1.13**. It handles the case where a Codex chat started without a project, was later moved into one, and never appeared in T3's import. Use T3's normal setup/import first.
 
 ## Start from a T3 chat
 
@@ -24,7 +24,9 @@ Find imported chats in T3’s **Settled** section, or search their titles. **Bef
 
 ## Run directly
 
-Requires **Node 24.10 or later**, an initialized T3 0.1.12 profile, and the default Codex provider instance (`codex`) using the same Codex home as the source. The release checkout includes its T3 adapter; no `npm install` is needed to run it. An agent can use an available compatible Node runtime, or help set one up. Do not assume the system `node` is compatible.
+Requires **Node 24.10 or later**, an initialized T3 profile with a recognized database format, and the default Codex provider instance (`codex`) using the same Codex home as the source. **Compatibility:** tested on T3 0.1.12 and 0.1.13. Later app/server versions can proceed with a warning if the database still matches one of those tested formats. Unknown database formats and app/server versions older than the detected format are refused. A version warning is not a claim that a future release works.
+
+The release checkout includes its T3 adapter; no `npm install` is needed to run it. An agent can use an available compatible Node runtime, or help set one up. Do not assume the system `node` is compatible.
 
 ```sh
 git clone https://github.com/batmanscode/threadlift.git
@@ -100,20 +102,22 @@ Runtime code uses Node built-ins plus a bundled, version-pinned T3 adapter. The 
 
 ```sh
 npm ci
-git clone --depth 1 --branch v0.1.12 https://github.com/pingdotgg/t3code.git work/t3code
+git clone --depth 1 --branch v0.1.12 https://github.com/pingdotgg/t3code.git work/t3code-v0.1.12
+git clone --depth 1 --branch v0.1.13 https://github.com/pingdotgg/t3code.git work/t3code-v0.1.13
 npm run build:adapter
 npm test
 ```
 
-The build verifies upstream commit `ca81b7b97a1c4b91e5ac25768d0f6629f37732fd`. Tests create isolated Codex/T3 profiles; never point development servers or write tests at a real profile.
+The build checks the exact release commits in [`adapters/t3-releases.json`](adapters/t3-releases.json), bundles the 0.1.13 writer, and builds separate migration fixtures for both supported versions. `npm test` runs the full suite against each fixture. The imported chat/event formats are shared; the two new 0.1.13 migrations affect workflow tables. The database format is matched exactly; later app/server versions warn, and versions older than that format are refused. Tests create isolated Codex/T3 profiles; never point development servers or write tests at a real profile.
 
 ### Verification
 
-Recorded automated baseline: Threadlift `0.1.5` ([`0bd4d93`](https://github.com/batmanscode/threadlift/commit/0bd4d938b16714e988ab50dcdca065a81f619e36)) with pinned T3 Code `0.1.12` fixtures.
+Recorded automated baseline: Threadlift `0.1.6` with separate pinned T3 Code `0.1.12` and `0.1.13` fixtures.
 
 | Area | Status | Evidence and limits |
 | --- | --- | --- |
-| Automated suite (`npm test`) | 27 tests passed, 2026-11-26 | Local and CI runs on isolated synthetic profiles using the native T3 writer, projection readback and file hashes. Covers history/file fidelity, source and existing-chat protection, locking, rollback, crash/retry, and origin/rewind/identity refusal. |
+| Automated suite (`npm test`) | 27 tests passed on each version (54 checks), 2026-11-28 | Local and CI runs on isolated synthetic profiles using the native T3 writer, projection readback and file hashes. Covers history/file fidelity, source and existing-chat protection, locking, rollback, crash/retry, and origin/rewind/identity refusal. |
+| Official T3 `0.1.13` server and web client | Checked 2026-11-28 | A synthetic 260-message chat appeared in Settled; earlier turns loaded and generated HTML with its relative companion image rendered after deleting the synthetic source folder. This run did not test live continuation. The in-app PDF preview was blank, so visual PDF rendering remains unconfirmed. |
 | Official T3 `0.1.12` server and web client | Checked in an earlier release | Earlier history and upload downloads worked; a dedicated Codex test session continued with remembered context and read a copied workspace file. |
 | Generated-file recovery in the T3 `0.1.12` web client | Earlier synthetic check | With the original files removed, HTML and its relative companion image rendered, the chat image rendered, the ZIP was browsable, and the PDF served identical `application/pdf` bytes. The in-app test browser's PDF preview was blank; visual PDF rendering was not confirmed. |
 | macOS desktop `.app` handoff | **Not tested** | The desktop app was not installed during these checks. Actual `Cmd+Q` → independent worker → import/verify → automatic reopen has not been exercised. |
@@ -129,7 +133,7 @@ Small, focused fixes are welcome. Include what failed and a test or reproduction
 New Threadlift code is [Apache-2.0](LICENSE). Bundled T3 Code and dependencies retain their [upstream notices](vendor/THIRD_PARTY_LICENSES.txt). Threadlift is an independent recovery tool.
 
 - [Native project-discovery fix, T3 PR #34542](https://github.com/pingdotgg/t3code/pull/34542)
-- [T3's released importer](https://github.com/pingdotgg/t3code/blob/v0.1.12/apps/server/src/project/AgentSessionImporter.ts)
+- [T3's released importer](https://github.com/pingdotgg/t3code/blob/v0.1.13/apps/server/src/project/AgentSessionImporter.ts)
 - [Peter Steinberger's agent/skill guidance](https://github.com/steipete/agent-scripts)
 - [OpenClaw skill-creation guidance](https://github.com/openclaw/openclaw/blob/main/skills/skill-creator/SKILL.md)
 
