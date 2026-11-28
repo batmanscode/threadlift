@@ -60,8 +60,9 @@ export async function servePicker({ codexHome = join(homedir(), '.codex'), t3Hom
   if (reopen && target.home !== await realpath(join(homedir(), '.t3')).catch(() => null)) throw new Error('Automatic reopening supports the default ~/.t3 profile. For isolated profiles use --no-reopen and open the intended profile yourself.');
   const cache = new Map(), previewFailures = new Map(), token = randomToken(); let preparing = false;
   const pickerState = () => ({ mode: 'picker', version: appVersion || target.version, formatVersion: target.formatVersion, warnings, scanId, scanDays,
-      pathContext: { home: homedir(), cwd: process.cwd() }, unavailableChats: index.unavailableChats.filter(c => !target.owners[c.id]),
-      chats: index.chats.map(c => ({ id: c.id, title: c.title, root: c.root, cwd: c.cwd, updatedAt: c.updatedAt,
+      pathContext: { home: homedir(), cwd: process.cwd() }, helperSessionsExcluded: index.chats.filter(c => c.isHelper).length + index.unavailableChats.filter(c => c.isHelper).length,
+      unavailableChats: index.unavailableChats.filter(c => !c.isHelper && !target.owners[c.id]),
+      chats: index.chats.filter(c => !c.isHelper).map(c => ({ id: c.id, title: c.title, root: c.root, cwd: c.cwd, updatedAt: c.updatedAt,
         assignment: c.assignment, archived: c.archived, existing: target.owners[c.id] || null })), projects: target.projects });
   const service = await startHttp(token, async (path, method, data) => {
     if (path === '/api/state' && method === 'GET') return pickerState();
@@ -75,7 +76,9 @@ export async function servePicker({ codexHome = join(homedir(), '.codex'), t3Hom
       try {
       const current = data.scanId === scanId ? index : await discoverCodex(index.codexHome, { days: 0 });
       const meta = current.chats.find(c => c.id === data.id); if (!meta) throw new Error('Chat not found. Rescan first.');
-      const c = await readConversation(meta, current); cache.set(c.id, c.sourceHash);
+      const c = await readConversation(meta, current);
+      if (c.isHelper) throw new Error('This is an internal Codex helper session. Import the main chat instead.');
+      cache.set(c.id, c.sourceHash);
       previewFailures.delete(c.id);
       const folder = c.root || c.cwd;
       const folderError = !folder ? 'Choose the current project folder.' : !(await lstat(folder).catch(() => null))?.isDirectory() ? 'The recorded folder is missing. Choose its current location.' : null;

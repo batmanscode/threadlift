@@ -67,6 +67,7 @@ export async function stageJob(index, t3Home, selections, { jobRoot = defaultJob
       if (!meta) throw new Error('Selected chat is not in this scan. Rescan first.');
       if (target.owners[meta.id]) throw new Error(`“${meta.title}” is already in T3. Existing or partial imports will not be overwritten.`);
       const conversation = await readConversation(meta, index);
+      if (conversation.isHelper) throw new Error('This is an internal Codex helper session. Import the main chat instead.');
       if (selected.sourceHash && selected.sourceHash !== conversation.sourceHash) throw new Error(`“${meta.title}” changed after preview. Review it again.`);
       const rootValue = selected.root ?? (conversation.root || conversation.cwd);
       if (!rootValue) throw new Error(`Choose the current project folder for “${conversation.title}”.`);
