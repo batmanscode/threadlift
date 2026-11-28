@@ -6,19 +6,30 @@ import { execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { hash, inside, expand } from './codex.mjs';
 import { jobLock, installFile, cleanOwnedFiles } from './recovery.mjs';
-import { applyBatch, upstream, providerThreadId, createAttachmentId, attachmentFileExtension, projectDefaults } from '../vendor/t3-v0.1.12.mjs';
+import { applyBatch, upstream, supportedVersions, providerThreadId, createAttachmentId, attachmentFileExtension, projectDefaults } from '../vendor/t3.mjs';
 
 export const CRITICAL_TABLES = ['effect_sql_migrations', 'projection_projects', 'orchestration_events', 'orchestration_v2_projection_threads',
   'orchestration_v2_projection_messages', 'orchestration_v2_projection_turn_items', 'orchestration_v2_projection_provider_threads',
   'provider_session_runtime', 'orchestration_v2_projection_metadata', 'orchestration_v2_turn_item_positions'];
-export function schemaSignature(db) {
+export function schemaSignature(db, version = upstream.version) {
   const columns = Object.fromEntries(CRITICAL_TABLES.map(t => [t, db.prepare(`PRAGMA table_info(${t})`).all().map(r => ({ name: r.name, type: r.type, notnull: r.notnull, pk: r.pk }))]));
   const migrations = db.prepare('SELECT migration_id, name FROM effect_sql_migrations WHERE migration_id>=55 ORDER BY migration_id').all();
-  return { version: upstream.version, columns, migrations };
+  return { version, columns, migrations };
 }
 export async function compatible(db) {
-  const expected = JSON.parse(await readFile(new URL('../adapters/t3-v0.1.12-schema.json', import.meta.url), 'utf8'));
-  if (JSON.stringify(schemaSignature(db)) !== JSON.stringify(expected)) throw new Error('This T3 database does not match the tested 0.1.12 format. Nothing was imported.');
+  for (const version of supportedVersions) {
+    const expected = JSON.parse(await readFile(new URL(`../adapters/t3-v${version}-schema.json`, import.meta.url), 'utf8'));
+    if (JSON.stringify(schemaSignature(db, version)) === JSON.stringify(expected)) return version;
+  }
+  throw new Error(`This T3 database does not match the tested ${supportedVersions.join(' or ')} formats. Nothing was imported.`);
+}
+export function versionWarnings(version, formatVersion) {
+  const parsed = /^(\d+)\.(\d+)\.(\d+)(?:-([\w.-]+))?$/.exec(version || '');
+  const minimum = formatVersion.split('.').map(Number);
+  const parts = parsed?.slice(1, 4).map(Number);
+  const difference = parts?.map((part, i) => part - minimum[i]).find(n => n !== 0) || 0;
+  if (!parts || difference < 0 || (difference === 0 && parsed[4])) throw new Error(`T3 ${version || '(unknown version)'} is older than or incompatible with this profile’s tested ${formatVersion} database format. Nothing was imported.`);
+  return supportedVersions.includes(version) ? [] : [`T3 ${version} has not been tested with Threadlift. Its database matches the tested ${formatVersion} format. Check the imported chats and files before using them.`];
 }
 export async function atomicJson(path, value) {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
@@ -34,18 +45,19 @@ export async function inspectTarget(t3Home) {
   if ((await lstat(dbPath)).isSymbolicLink()) throw new Error('T3 database is a symlink; use its actual profile directory.');
   const db = new DatabaseSync(dbPath, { readOnly: true, timeout: 2000 });
   try {
-    await compatible(db);
+    const formatVersion = await compatible(db);
     const projects = db.prepare('SELECT project_id AS id,title,workspace_root AS root FROM projection_projects WHERE deleted_at IS NULL').all();
     const owners = {};
     for (const r of db.prepare('SELECT thread_id,payload_json FROM orchestration_v2_projection_provider_threads').all()) {
       const p = JSON.parse(r.payload_json); if (p.nativeThreadRef?.driver === 'codex') owners[p.nativeThreadRef.nativeId] = r.thread_id;
     }
     const runtime = await readFile(join(state, 'server-runtime.json'), 'utf8').then(JSON.parse).catch(e => { if (e.code === 'ENOENT') return null; throw e; });
-    if (runtime?.serverVersion && runtime.serverVersion !== upstream.version) throw new Error(`T3 ${runtime.serverVersion} is running; this release supports ${upstream.version}.`);
+    const version = runtime?.serverVersion || null;
+    const warnings = version ? versionWarnings(version, formatVersion) : [];
     if (runtime?.managedPolicy) throw new Error('Managed T3 environments are not supported by this personal recovery tool.');
     const settings = await readFile(join(state, 'settings.json'), 'utf8').then(JSON.parse).catch(e => { if (e.code === 'ENOENT') return {}; throw e; });
-    return { home, state, dbPath, version: upstream.version, projects, owners, settings,
-      fingerprint: hash(JSON.stringify(schemaSignature(db))) };
+    return { home, state, dbPath, version, formatVersion, warnings, projects, owners, settings,
+      fingerprint: hash(JSON.stringify(schemaSignature(db, formatVersion))) };
   } finally { db.close(); }
 }
 export function acquireOwnership(state) {
@@ -203,6 +215,9 @@ export async function applyJob(jobPath, { waitMs = 20 * 60_000, onStatus = async
     }
     const target = await inspectTarget(job.target.home);
     if (target.fingerprint !== job.target.fingerprint) throw new Error('The T3 format changed after review. Rescan before importing.');
+    const appVersion = job.reopen && job.appPath ? readAppVersion(job.appPath, target.formatVersion) : null;
+    job.compatibilityWarnings = [...new Set([...(job.compatibilityWarnings || []), ...target.warnings,
+      ...(appVersion ? versionWarnings(appVersion, target.formatVersion) : [])])];
     const owned = job.batch.threads.map(t => target.owners[t.sourceId]);
     if (journal.phase === 'committed' || hasImportEvidence(job, target)) {
       if (freshAttempt) throw new Error('A selected chat is already in T3. Rescan; existing imports stay unchanged.');
@@ -247,6 +262,7 @@ export async function applyJob(jobPath, { waitMs = 20 * 60_000, onStatus = async
     await status('verifying', 'Checking imported messages, file hashes, and session bindings.');
     const threads = await verifyJob(job);
     const result = { format: 'threadlift-receipt-v1', importedAt: new Date().toISOString(), threads, files: job.files.length,
+      compatibilityWarnings: job.compatibilityWarnings,
       fileCounts: Object.fromEntries(['attachment','linked','workspace'].map(kind => [kind, job.files.filter(f => f.kind === kind).length])), linkedFiles: job.linkedFiles || [],
       missing: job.missing, skipped: job.skipped, backupPath: journal.backupPath, sourceUnchanged: true,
       continuation: 'Original session IDs and working folders verified; this import does not send a live follow-up.' };
@@ -268,9 +284,10 @@ export async function applyJob(jobPath, { waitMs = 20 * 60_000, onStatus = async
   }
 }
 
-export function readAppVersion(appPath) {
+export function readAppVersion(appPath, formatVersion = supportedVersions[0]) {
   const info = JSON.parse(execFileSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', join(appPath, 'Contents/Info.plist')], { encoding: 'utf8' }));
   const version = info.CFBundleShortVersionString;
-  if (!String(info.CFBundleName || '').includes('T3') || version !== upstream.version) throw new Error(`Expected T3 Code ${upstream.version} at ${appPath}.`);
+  if (!String(info.CFBundleName || '').includes('T3')) throw new Error(`Expected T3 Code at ${appPath}.`);
+  versionWarnings(version, formatVersion);
   return version;
 }

@@ -17,7 +17,8 @@ export async function stageJob(index, t3Home, selections, { jobRoot = defaultJob
   await mkdir(directory, { mode: 0o700 });
   try {
     const job = { format: 'threadlift-job-v1', codexHome: index.codexHome, id, createdAt: new Date().toISOString(),
-      target: { home: target.home, state: target.state, dbPath: target.dbPath, fingerprint: target.fingerprint, version: target.version },
+      target: { home: target.home, state: target.state, dbPath: target.dbPath, fingerprint: target.fingerprint, version: target.version, formatVersion: target.formatVersion },
+      compatibilityWarnings: target.warnings,
       batch: { projects: [], threads: [] }, files: [], expectedExisting: [], linkedFiles: [], missing: [], skipped: [], sources: [] };
     let stagedBytes = 0;
     const projects = new Map(target.projects.map(p => [resolve(p.root), p.id]));

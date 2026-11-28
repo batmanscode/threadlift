@@ -2,13 +2,17 @@ import { mkdtemp, mkdir, writeFile, rm, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { initializeFixture } from '../work/t3-fixture.mjs';
+import releases from '../adapters/t3-releases.json' with { type: 'json' };
+export const fixtureVersion = process.env.THREADLIFT_TEST_T3_VERSION || releases.at(-1).version;
+if (!releases.some(r => r.version === fixtureVersion)) throw new Error('Unsupported test fixture version.');
+const { initializeFixture } = await import(`../work/t3-fixture-v${fixtureVersion}.mjs`);
 export async function fixture(t, { turns = 1 } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'threadlift-test-')));
   t?.after(() => rm(root, { recursive: true, force: true }));
   const source = join(root, 'codex'), target = join(root, 't3'), workspace = join(root, 'project'), scratch = join(root, 'scratch');
   await Promise.all([mkdir(join(source, 'sessions/2026/11/25'), { recursive: true }), mkdir(join(target, 'userdata'), { recursive: true }), mkdir(workspace), mkdir(scratch)]);
   await initializeFixture(join(target, 'userdata/statev2.sqlite'));
+  await writeFile(join(target, 'userdata/server-runtime.json'), JSON.stringify({ serverVersion: fixtureVersion }));
   await writeFile(join(target,'userdata/settings.json'),JSON.stringify({providerInstances:{codex:{driver:'codex',enabled:true,config:{setupMode:'existing',homePath:source}}}}),{mode:0o600});
   const id = randomUUID(), path = join(source, `sessions/2026/11/25/rollout-2026-11-25T00-00-00-${id}.jsonl`);
   const time = new Date().toISOString();

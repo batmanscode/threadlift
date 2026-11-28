@@ -4,11 +4,15 @@ import { resolve, join, dirname } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 const root = resolve(import.meta.dirname, '..');
-const upstream = resolve(process.argv[2] || join(root, 'work/t3code'));
-const commit = 'ca81b7b97a1c4b91e5ac25768d0f6629f37732fd';
-if (execFileSync('/usr/bin/git', ['rev-parse', 'HEAD'], { cwd: upstream, encoding: 'utf8' }).trim() !== commit)
-  throw new Error('Build requires the exact T3 Code v0.1.12 commit.');
-const aliases = {
+const releases = JSON.parse(await readFile(join(root, 'adapters/t3-releases.json'), 'utf8'));
+const latest = releases.at(-1);
+const upstreams = new Map(releases.map(r => [r.version, resolve(r === latest && process.argv[2] ? process.argv[2] : join(root, `work/t3code-v${r.version}`))]));
+for (const { version, commit } of releases) {
+  if (execFileSync('/usr/bin/git', ['rev-parse', 'HEAD'], { cwd: upstreams.get(version), encoding: 'utf8' }).trim() !== commit)
+    throw new Error(`Build requires the exact T3 Code v${version} commit ${commit}.`);
+}
+const upstream = upstreams.get(latest.version), { commit, version } = latest;
+const aliases = upstream => ({
   name: 't3-workspace',
   setup(builder) {
     builder.onResolve({ filter: /^@upstream\// }, args => ({ path: join(upstream, args.path.slice(10)) }));
@@ -23,19 +27,19 @@ const aliases = {
       return { path: resolve(directory, target) };
     });
   },
-};
+});
 await mkdir(join(root, 'vendor'), { recursive: true });
-for (const [entry, outfile] of [
-  ['adapters/t3-v0.1.12.ts', 'vendor/t3-v0.1.12.mjs'],
-  ['scripts/t3-fixture.ts', 'work/t3-fixture.mjs'],
+for (const [entry, outfile, source, releaseVersion, releaseCommit] of [
+  ['adapters/t3.ts', 'vendor/t3.mjs', upstream, version, commit],
+  ...releases.map(r => ['scripts/t3-fixture.ts', `work/t3-fixture-v${r.version}.mjs`, upstreams.get(r.version), r.version, r.commit]),
 ]) {
   const result = await build({
     entryPoints: [join(root, entry)], outfile: join(root, outfile), bundle: true,
     platform: 'node', format: 'esm', target: 'node24', minify: true,
-    packages: 'bundle', plugins: [aliases], metafile: true, legalComments: 'inline',
-    banner: { js: `// T3 Code v0.1.12 (${commit}); upstream MIT licenses: vendor/THIRD_PARTY_LICENSES.txt\nimport { createRequire as threadliftCreateRequire } from 'node:module'; const require = threadliftCreateRequire(import.meta.url);` },
+    packages: 'bundle', plugins: [aliases(source)], metafile: true, legalComments: 'inline',
+    banner: { js: `// T3 Code v${releaseVersion} (${releaseCommit}); upstream MIT licenses: vendor/THIRD_PARTY_LICENSES.txt\nimport { createRequire as threadliftCreateRequire } from 'node:module'; const require = threadliftCreateRequire(import.meta.url);` },
   });
-  await writeFile(join(root, 'work', entry.includes('fixture') ? 'fixture-inputs.json' : 'adapter-inputs.json'), JSON.stringify(result.metafile, null, 2));
+  await writeFile(join(root, 'work', entry.includes('fixture') ? `fixture-v${releaseVersion}-inputs.json` : 'adapter-inputs.json'), JSON.stringify(result.metafile, null, 2));
 }
 const meta = JSON.parse(await readFile(join(root, 'work/adapter-inputs.json'), 'utf8'));
 const packageRoots = new Set();
@@ -46,7 +50,7 @@ for (const path of Object.keys(meta.inputs).filter(p => p.includes('node_modules
     directory = dirname(directory);
   }
 }
-const licenses = [`T3 Code v0.1.12 (${commit})\n${await readFile(join(upstream, 'LICENSE'), 'utf8')}`];
+const licenses = [`T3 Code v${version} (${commit})\n${await readFile(join(upstream, 'LICENSE'), 'utf8')}`];
 for (const directory of [...packageRoots].sort()) {
   const pkg = JSON.parse(await readFile(join(directory, 'package.json'), 'utf8'));
   const notices = (await readdir(directory)).filter(n => /^(?:licen[cs]e|copying|notice)(?:$|[.-])/i.test(n));

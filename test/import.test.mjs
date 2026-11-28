@@ -10,7 +10,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { fixture } from './fixtures.mjs';
 import { discoverCodex, readConversation, localFileLinks, hash } from '../src/codex.mjs';
 import { stageJob } from '../src/stage.mjs';
-import { applyBatch, resolveMarkdownFileLinkTarget } from '../vendor/t3-v0.1.12.mjs';
+import { applyBatch, resolveMarkdownFileLinkTarget } from '../vendor/t3.mjs';
 import { applyJob, inspectTarget, acquireOwnership, releaseOwnership, makeProject } from '../src/target.mjs';
 
 test('imports all 260 messages, uploads, moved-project assignment and actual scratch files', async t => {
@@ -42,9 +42,9 @@ test('generated files remain openable through project links without changing the
     await copyFile(image,join(site,'assets/already-here.png'));
     await writeFile(zip,Buffer.from('504b05060000000000000000000000000000000000000000','hex'));
     await writeFile(skipped,'Unselected link');
-    const href = pathToFileURL(html).href, pdfHref = pathToFileURL(pdf).href;
+    const href = pathToFileURL(html).href;
     const homePdf = '~/'+relative(homedir(),pdf);
-    const original = `[Report](<${href}#main> "HTML title") and [again](${href})\n\n![Preview](${image})\n\n[Archive](${zip}) and [PDF][pdf]\n\n[pdf]: <${pdfHref}#page=1>\n\n[Home PDF](${homePdf}) and [External](${external})\n\n[Leave](${skipped})\n\nPlain path: ${html}\n\n\`[sample](${href})\`\n\n~~~\n[sample](${href})\n~~~`;
+    const original = `[Report](<${href}#main> "HTML title") and [again](${href})\n\n![Preview](${image})\n\n[Archive](${zip}) and [PDF][pdf]\n\n[pdf]: <sandbox:${pdf}#page=1>\n\n[Home PDF](${homePdf}) and [External](${external})\n\n[Leave](${skipped})\n\nPlain path: ${html}\n\n\`[sample](${href})\`\n\n~~~\n[sample](${href})\n~~~`;
     const records = (await readFile(f.path,'utf8')).trim().split('\n').map(JSON.parse);
     records.at(-1).payload.content = [{type:'output_text',text:original},
       {type:'image',name:'inline.png',image_url:'data:image/png;base64,'+(await readFile(image)).toString('base64')}];
@@ -208,6 +208,22 @@ test('does not write while the official server ownership lock is held', async t 
   try { await assert.rejects(applyJob(staged.path, { waitMs: 0 }), /Timed out/); }
   finally { releaseOwnership(held); }
   assert.equal((await inspectTarget(f.target)).owners[f.id], undefined);
+  if (process.platform === 'darwin') {
+    const appPath = join(f.root, 'T3 Code.app'); await mkdir(join(appPath, 'Contents'), { recursive: true });
+    const setVersion = version => writeFile(join(appPath, 'Contents/Info.plist'), `<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleName</key><string>T3 Code</string><key>CFBundleShortVersionString</key><string>${version}</string></dict></plist>`);
+    await setVersion('0.1.13');
+    staged.job.appPath = appPath; staged.job.reopen = true;
+    await writeFile(staged.path, JSON.stringify(staged.job));
+    // The selected app can be replaced while the worker waits. Recheck it
+    // under ownership before writing, including on a manual apply retry.
+    await assert.rejects(applyJob(staged.path, { onStatus: async status => {
+      if (status.phase === 'waiting') await setVersion('0.1.11');
+    } }), /older than or incompatible/);
+    assert.equal((await inspectTarget(f.target)).owners[f.id], undefined);
+    await setVersion('0.1.14');
+    const receipt = await applyJob(staged.path);
+    assert.match(receipt.compatibilityWarnings[0], /0\.1\.14 has not been tested/);
+  }
 });
 
 test('restarts after a process crash during file copying without clobbering or duplicating', async t => {

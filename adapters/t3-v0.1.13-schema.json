@@ -1,0 +1,875 @@
+{
+  "version": "0.1.13",
+  "columns": {
+    "effect_sql_migrations": [
+      {
+        "name": "migration_id",
+        "type": "INTEGER",
+        "notnull": 1,
+        "pk": 1
+      },
+      {
+        "name": "created_at",
+        "type": "datetime",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "name",
+        "type": "VARCHAR(255)",
+        "notnull": 1,
+        "pk": 0
+      }
+    ],
+    "projection_projects": [
+      {
+        "name": "project_id",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 1
+      },
+      {
+        "name": "title",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "workspace_root",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "scripts_json",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "created_at",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "updated_at",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "deleted_at",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 0
+      },
+      {
+        "name": "default_model_selection_json",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 0
+      },
+      {
+        "name": "default_thread_env_mode",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 0
+      },
+      {
+        "name": "favicon_path",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 0
+      },
+      {
+        "name": "auto_pull",
+        "type": "INTEGER",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "project_icon_json",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 0
+      },
+      {
+        "name": "pinned_at",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 0
+      },
+      {
+        "name": "archived_at",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 0
+      },
+      {
+        "name": "has_custom_title",
+        "type": "INTEGER",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "tracked_folders_json",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      }
+    ],
+    "orchestration_events": [
+      {
+        "name": "sequence",
+        "type": "INTEGER",
+        "notnull": 0,
+        "pk": 1
+      },
+      {
+        "name": "event_id",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "aggregate_kind",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "stream_id",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "stream_version",
+        "type": "INTEGER",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "event_type",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "occurred_at",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "command_id",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 0
+      },
+      {
+        "name": "causation_event_id",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 0
+      },
+      {
+        "name": "correlation_id",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 0
+      },
+      {
+        "name": "actor_kind",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "payload_json",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "metadata_json",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "application_event_version",
+        "type": "INTEGER",
+        "notnull": 1,
+        "pk": 0
+      }
+    ],
+    "orchestration_v2_projection_threads": [
+      {
+        "name": "thread_id",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 1
+      },
+      {
+        "name": "project_id",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "title",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "default_provider",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "runtime_mode",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "interaction_mode",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "active_provider_thread_id",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 0
+      },
+      {
+        "name": "created_at",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "updated_at",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "archived_at",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 0
+      },
+      {
+        "name": "deleted_at",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 0
+      },
+      {
+        "name": "payload_json",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "provider_instance_id",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 0
+      },
+      {
+        "name": "fork_run_ids_json",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 0
+      }
+    ],
+    "orchestration_v2_projection_messages": [
+      {
+        "name": "message_id",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 1
+      },
+      {
+        "name": "thread_id",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "run_id",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 0
+      },
+      {
+        "name": "node_id",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 0
+      },
+      {
+        "name": "role",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "streaming",
+        "type": "INTEGER",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "created_at",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "updated_at",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "payload_json",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "search_text",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 0
+      }
+    ],
+    "orchestration_v2_projection_turn_items": [
+      {
+        "name": "turn_item_id",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 1
+      },
+      {
+        "name": "thread_id",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "run_id",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 0
+      },
+      {
+        "name": "node_id",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 0
+      },
+      {
+        "name": "provider_thread_id",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 0
+      },
+      {
+        "name": "provider_turn_id",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 0
+      },
+      {
+        "name": "parent_item_id",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 0
+      },
+      {
+        "name": "ordinal",
+        "type": "INTEGER",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "type",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "status",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "updated_at",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "payload_json",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "inline_work_output",
+        "type": "INTEGER",
+        "notnull": 1,
+        "pk": 0
+      }
+    ],
+    "orchestration_v2_projection_provider_threads": [
+      {
+        "name": "provider_thread_id",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 1
+      },
+      {
+        "name": "thread_id",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 0
+      },
+      {
+        "name": "owner_node_id",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 0
+      },
+      {
+        "name": "provider",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "provider_session_id",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 0
+      },
+      {
+        "name": "status",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "first_run_ordinal",
+        "type": "INTEGER",
+        "notnull": 0,
+        "pk": 0
+      },
+      {
+        "name": "last_run_ordinal",
+        "type": "INTEGER",
+        "notnull": 0,
+        "pk": 0
+      },
+      {
+        "name": "updated_at",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "payload_json",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "driver",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 0
+      },
+      {
+        "name": "provider_instance_id",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 0
+      }
+    ],
+    "provider_session_runtime": [
+      {
+        "name": "thread_id",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 1
+      },
+      {
+        "name": "provider_name",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "adapter_key",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "runtime_mode",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "status",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "last_seen_at",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "resume_cursor_json",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 0
+      },
+      {
+        "name": "runtime_payload_json",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 0
+      },
+      {
+        "name": "provider_instance_id",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 0
+      }
+    ],
+    "orchestration_v2_projection_metadata": [
+      {
+        "name": "projection_name",
+        "type": "TEXT",
+        "notnull": 0,
+        "pk": 1
+      },
+      {
+        "name": "schema_version",
+        "type": "INTEGER",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "last_sequence",
+        "type": "INTEGER",
+        "notnull": 1,
+        "pk": 0
+      },
+      {
+        "name": "updated_at",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 0
+      }
+    ],
+    "orchestration_v2_turn_item_positions": [
+      {
+        "name": "thread_id",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 1
+      },
+      {
+        "name": "turn_item_id",
+        "type": "TEXT",
+        "notnull": 1,
+        "pk": 2
+      },
+      {
+        "name": "ordinal",
+        "type": "INTEGER",
+        "notnull": 1,
+        "pk": 0
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "migration_id": 55,
+      "name": "OrchestrationV2"
+    },
+    {
+      "migration_id": 56,
+      "name": "RemoveRedundantProjectionIndexes"
+    },
+    {
+      "migration_id": 57,
+      "name": "ScheduledTaskWebhooks"
+    },
+    {
+      "migration_id": 58,
+      "name": "WebhookRelayDeliveries"
+    },
+    {
+      "migration_id": 59,
+      "name": "McpAppModelContext"
+    },
+    {
+      "migration_id": 60,
+      "name": "ThreadSnapshotWindowIndexes"
+    },
+    {
+      "migration_id": 61,
+      "name": "PullRequestReviewGuides"
+    },
+    {
+      "migration_id": 62,
+      "name": "ThreadFailureLookupIndex"
+    },
+    {
+      "migration_id": 63,
+      "name": "DropUnusedV1Projections"
+    },
+    {
+      "migration_id": 64,
+      "name": "CanonicalizeThreadPullRequestLinks"
+    },
+    {
+      "migration_id": 65,
+      "name": "CodexUsageNativeTurnIndex"
+    },
+    {
+      "migration_id": 66,
+      "name": "RepairClientSettlementTimestamps"
+    },
+    {
+      "migration_id": 67,
+      "name": "WebhookDedupe"
+    },
+    {
+      "migration_id": 68,
+      "name": "ShellStopRequestIndex"
+    },
+    {
+      "migration_id": 69,
+      "name": "ThreadMessageSearch"
+    },
+    {
+      "migration_id": 70,
+      "name": "PeerLinks"
+    },
+    {
+      "migration_id": 71,
+      "name": "PeerLinkFence"
+    },
+    {
+      "migration_id": 72,
+      "name": "WaitingLinkRequestIndex"
+    },
+    {
+      "migration_id": 73,
+      "name": "ActiveTurnItemIndexes"
+    },
+    {
+      "migration_id": 74,
+      "name": "ExcludeAttachmentPlaceholdersFromSearch"
+    },
+    {
+      "migration_id": 75,
+      "name": "SubagentDeliveryState"
+    },
+    {
+      "migration_id": 76,
+      "name": "ProjectionProjectsPinArchive"
+    },
+    {
+      "migration_id": 77,
+      "name": "RepairBooleanSettledOverride"
+    },
+    {
+      "migration_id": 78,
+      "name": "DropOrchestrationEventCorrelationIndex"
+    },
+    {
+      "migration_id": 79,
+      "name": "DelegatedRecoveryIndexes"
+    },
+    {
+      "migration_id": 80,
+      "name": "ScheduledTaskThreadMode"
+    },
+    {
+      "migration_id": 81,
+      "name": "ProjectionMessageSearchText"
+    },
+    {
+      "migration_id": 82,
+      "name": "TurnItemConversationIndex"
+    },
+    {
+      "migration_id": 83,
+      "name": "CommandReadIndexes"
+    },
+    {
+      "migration_id": 84,
+      "name": "LastExecutedRunIndex"
+    },
+    {
+      "migration_id": 85,
+      "name": "TurnItemCounts"
+    },
+    {
+      "migration_id": 86,
+      "name": "QueuedTurnInputIndex"
+    },
+    {
+      "migration_id": 87,
+      "name": "ProjectionProjectsCustomTitle"
+    },
+    {
+      "migration_id": 88,
+      "name": "TurnItemTypeStatusIndex"
+    },
+    {
+      "migration_id": 89,
+      "name": "ShellThreadReadIndexes"
+    },
+    {
+      "migration_id": 90,
+      "name": "AuthConnectDevices"
+    },
+    {
+      "migration_id": 91,
+      "name": "AuthConnectDeniedRequests"
+    },
+    {
+      "migration_id": 92,
+      "name": "QueuedTurnInputIndexJsonValid"
+    },
+    {
+      "migration_id": 93,
+      "name": "ProviderTurnAttemptIndex"
+    },
+    {
+      "migration_id": 94,
+      "name": "TurnItemMessageOrdinalIndex"
+    },
+    {
+      "migration_id": 95,
+      "name": "TurnItemInlineWorkOutput"
+    },
+    {
+      "migration_id": 96,
+      "name": "RepairStaleTitleRegeneration"
+    },
+    {
+      "migration_id": 97,
+      "name": "IssueTrackerBindings"
+    },
+    {
+      "migration_id": 98,
+      "name": "ActiveShellIndexIndexes"
+    },
+    {
+      "migration_id": 99,
+      "name": "BackgroundRecoveryIndexes"
+    },
+    {
+      "migration_id": 100,
+      "name": "TurnStartReadIndexes"
+    },
+    {
+      "migration_id": 101,
+      "name": "DelegatedTaskReadIndexes"
+    },
+    {
+      "migration_id": 102,
+      "name": "ThreadItemCounts"
+    },
+    {
+      "migration_id": 103,
+      "name": "IssueTrackerAdditionalScopes"
+    },
+    {
+      "migration_id": 104,
+      "name": "ProjectionProjectsTrackedFolders"
+    },
+    {
+      "migration_id": 105,
+      "name": "TaskFolders"
+    },
+    {
+      "migration_id": 106,
+      "name": "WorktreePathKeyIndex"
+    },
+    {
+      "migration_id": 107,
+      "name": "DeferredSlashCommandIndex"
+    },
+    {
+      "migration_id": 108,
+      "name": "AgentFeedback"
+    },
+    {
+      "migration_id": 109,
+      "name": "IssueTrackerAccounts"
+    },
+    {
+      "migration_id": 110,
+      "name": "Workflows"
+    },
+    {
+      "migration_id": 111,
+      "name": "SupersededRunAttemptIndex"
+    },
+    {
+      "migration_id": 112,
+      "name": "LayoutCommandApprovals"
+    },
+    {
+      "migration_id": 113,
+      "name": "WorkflowSkippedRuns"
+    },
+    {
+      "migration_id": 114,
+      "name": "WorkflowRunIndexes"
+    },
+    {
+      "migration_id": 115,
+      "name": "WorkflowRunTags"
+    },
+    {
+      "migration_id": 116,
+      "name": "ForkHistoryMembership"
+    },
+    {
+      "migration_id": 117,
+      "name": "WorkflowMailSender"
+    },
+    {
+      "migration_id": 118,
+      "name": "WorkflowPools"
+    },
+    {
+      "migration_id": 119,
+      "name": "WorkflowRunSubject"
+    }
+  ]
+}

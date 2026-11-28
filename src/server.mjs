@@ -6,7 +6,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { discoverCodex, readConversation, hash, expand } from './codex.mjs';
-import { inspectTarget, applyJob, atomicJson, readAppVersion } from './target.mjs';
+import { inspectTarget, applyJob, atomicJson, readAppVersion, versionWarnings } from './target.mjs';
 import { jobLock } from './recovery.mjs';
 import { stageJob } from './stage.mjs';
 
@@ -52,11 +52,14 @@ export async function findApp(explicit) {
 export async function servePicker({ codexHome = join(homedir(), '.codex'), t3Home = join(homedir(), '.t3'), days = 30,
   appPath, jobRoot, port = 0, openBrowser = true, directWorker = false, reopen = true } = {}) {
   const index = await discoverCodex(codexHome, { days }), target = await inspectTarget(t3Home), app = reopen ? await findApp(appPath) : null;
-  if (reopen && !app) throw new Error('T3 Code was not found. Install and set up T3 0.1.12 first, or provide --app /path/to/T3.app.');
+  if (reopen && !app) throw new Error(`T3 Code was not found. Install and set up T3 ${target.version} first, or provide --app /path/to/T3.app.`);
+  const appVersion = app ? readAppVersion(app, target.formatVersion) : null;
+  const warnings = [...new Set([...target.warnings, ...(appVersion ? versionWarnings(appVersion, target.formatVersion) : [])])];
+  if (!appVersion && !target.version) warnings.push(`T3’s installed version is unknown. This profile matches the tested ${target.formatVersion} database format.`);
   if (reopen && target.home !== await realpath(join(homedir(), '.t3')).catch(() => null)) throw new Error('Automatic reopening supports the default ~/.t3 profile. For isolated profiles use --no-reopen and open the intended profile yourself.');
   const cache = new Map(), token = randomToken(); let preparing = false;
   const service = await startHttp(token, async (path, method, data) => {
-    if (path === '/api/state' && method === 'GET') return { mode: 'picker', version: target.version, pathContext: { home: homedir(), cwd: process.cwd() },
+    if (path === '/api/state' && method === 'GET') return { mode: 'picker', version: appVersion || target.version, formatVersion: target.formatVersion, warnings, pathContext: { home: homedir(), cwd: process.cwd() },
       chats: index.chats.map(c => ({ id: c.id, title: c.title, root: c.root, cwd: c.cwd, updatedAt: c.updatedAt,
         assignment: c.assignment, archived: c.archived, existing: target.owners[c.id] || null })), projects: target.projects };
     if (path === '/api/preview' && method === 'POST') {
@@ -74,6 +77,7 @@ export async function servePicker({ codexHome = join(homedir(), '.codex'), t3Hom
       try {
         const staged = await stageJob(index, target.home, data.selections, { jobRoot, acceptMissing: data.acceptMissing === true });
         staged.job.browserToken = randomToken(); staged.job.appPath = app; staged.job.reopen = reopen;
+        staged.job.compatibilityWarnings = [...new Set([...staged.job.compatibilityWarnings, ...warnings])];
         await atomicJson(staged.path, staged.job);
         const worker = directWorker ? await runWorker(staged.path, { cleanupMs: 120_000 }) : await launchWorker(staged.path);
         setTimeout(() => service.server.close(), 250);
@@ -133,7 +137,7 @@ export async function runWorker(jobPath, { label, launchId, cleanupMs = 10*60_00
     releaseGate = jobLock(gateDirectory);
     service = await startHttp(job.browserToken, async (path, method) => {
       if (path === '/api/state' && method === 'GET') return { mode: 'progress', sources: job.sources,
-        status: JSON.parse(await readFile(join(dir,'status.json'),'utf8')), directory: dir, autoReopen: job.reopen === true };
+        status: JSON.parse(await readFile(join(dir,'status.json'),'utf8')), warnings: job.compatibilityWarnings || [], directory: dir, autoReopen: job.reopen === true };
       throw new Error('This import is already prepared.');
     });
     await atomicJson(join(dir,'worker.json'), { pid: process.pid, url: service.url.split('#')[0], launchId });
@@ -144,11 +148,10 @@ export async function runWorker(jobPath, { label, launchId, cleanupMs = 10*60_00
   }
   const completion = (async () => {
     try {
-      if (job.reopen && job.appPath) readAppVersion(job.appPath);
       await applyJob(jobPath, { waitMs });
       const status = JSON.parse(await readFile(join(dir,'status.json'),'utf8'));
       if (job.reopen && job.appPath) {
-        try { readAppVersion(job.appPath); execFileSync('/usr/bin/open',['-a',job.appPath]); status.detail = 'Import verified. T3 was asked to reopen. You can close this tab and open your imported chat.'; }
+        try { readAppVersion(job.appPath, job.target.formatVersion || job.target.version); execFileSync('/usr/bin/open',['-a',job.appPath]); status.detail = 'Import verified. T3 was asked to reopen. You can close this tab and open your imported chat.'; }
         catch (e) { status.detail = 'Import verified. T3 could not reopen automatically; open it normally.'; status.reopenError = e.message; }
       }
       status.phase = 'complete';
