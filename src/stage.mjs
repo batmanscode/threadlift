@@ -7,7 +7,7 @@ import { inspectTarget, makeThread, makeProject, attachmentRecord, projectDefaul
 
 export const defaultJobRoot = () => join(homedir(), 'Library/Application Support/Threadlift/jobs');
 
-export async function stageJob(index, t3Home, selections, { jobRoot = defaultJobRoot(), acceptMissing = false } = {}) {
+export async function stageJob(index, t3Home, selections, { jobRoot = defaultJobRoot(), acceptMissing = false, plannedProjects = [], plannedFiles = new Map() } = {}) {
   if (!Array.isArray(selections) || selections.length < 1 || selections.length > 20) throw new Error('Select between 1 and 20 chats.');
   if (new Set(selections.map(s => s.id)).size !== selections.length) throw new Error('A chat was selected twice.');
   index = await discoverCodex(index.codexHome, { days: 0 });
@@ -20,8 +20,13 @@ export async function stageJob(index, t3Home, selections, { jobRoot = defaultJob
       target: { home: target.home, state: target.state, dbPath: target.dbPath, fingerprint: target.fingerprint, version: target.version, formatVersion: target.formatVersion },
       compatibilityWarnings: target.warnings,
       batch: { projects: [], threads: [] }, files: [], expectedExisting: [], linkedFiles: [], missing: [], skipped: [], sources: [] };
-    let stagedBytes = 0;
+    let stagedBytes = 0, historyBytes = 0;
     const projects = new Map(target.projects.map(p => [resolve(p.root), p.id]));
+    for (const p of plannedProjects) {
+      const root = resolve(p.payload.workspaceRoot), existing = projects.get(root);
+      if (existing && existing !== p.aggregateId) throw new Error('A project for this folder changed during preparation. Rescan before importing.');
+      projects.set(root, p.aggregateId);
+    }
     async function stageBytes(bytes, destination, displayName, kind, root, mode) {
       const planned = job.files.find(f => f.destination === destination);
       if (planned) {
@@ -29,7 +34,7 @@ export async function stageJob(index, t3Home, selections, { jobRoot = defaultJob
         return;
       }
       stagedBytes += bytes.length;
-      if (stagedBytes > LIMITS.stagedBytes) throw new Error('Selected recovery exceeds the 1 GiB staging limit.');
+      if (stagedBytes > LIMITS.stagedBytes) throw Object.assign(new Error('Selected recovery exceeds the 1 GiB staging limit for one batch.'), { code: 'THREADLIFT_BATCH_LIMIT' });
       const sha256 = hash(bytes), staged = join(directory, 'files', `${job.files.length}-${sha256}`);
       await mkdir(dirname(staged), { recursive: true, mode: 0o700 });
       await writeFile(staged, bytes, { mode: 0o600, flag: 'wx' });
@@ -37,6 +42,11 @@ export async function stageJob(index, t3Home, selections, { jobRoot = defaultJob
     }
     async function stageProjectFile(bytes, destination, displayName, kind, root, chat, mode) {
       if (!inside(root, destination)) throw new Error('Recovery path escapes its destination.');
+      if (plannedFiles.has(destination)) {
+        if (plannedFiles.get(destination) !== hash(bytes)) throw new Error(`Selected chats contain conflicting files: ${destination}`);
+        if (!job.expectedExisting.some(f => f.destination === destination)) job.expectedExisting.push({ destination, sha256: hash(bytes), displayName });
+        return;
+      }
       const existing = await lstat(destination).catch(e => { if (e.code === 'ENOENT') return null; throw e; });
       if (existing) {
         if (!existing.isFile() || existing.isSymbolicLink() || hash(await readFile(destination)) !== hash(bytes))
@@ -48,7 +58,9 @@ export async function stageJob(index, t3Home, selections, { jobRoot = defaultJob
       await stageBytes(bytes, destination, displayName, kind, root, mode);
     }
     for (const selected of selections) {
-      if (!selected || typeof selected.id !== 'string' || (selected.root !== undefined && (typeof selected.root !== 'string' || !selected.root.trim())) ||
+      if (selected?.root !== undefined && (typeof selected.root !== 'string' || !selected.root.trim()))
+        throw new Error(`Invalid chat selection: choose a project folder for “${index.chats.find(c => c.id === selected.id)?.title || 'this chat'}”.`);
+      if (!selected || typeof selected.id !== 'string' ||
         (selected.recoverWorkspace !== undefined && typeof selected.recoverWorkspace !== 'boolean') ||
         (selected.assets !== undefined && (!Array.isArray(selected.assets) || selected.assets.some(a => typeof a !== 'string')))) throw new Error('Invalid chat selection.');
       const meta = index.chats.find(c => c.id === selected.id);
@@ -57,10 +69,10 @@ export async function stageJob(index, t3Home, selections, { jobRoot = defaultJob
       const conversation = await readConversation(meta, index);
       if (selected.sourceHash && selected.sourceHash !== conversation.sourceHash) throw new Error(`“${meta.title}” changed after preview. Review it again.`);
       const rootValue = selected.root ?? (conversation.root || conversation.cwd);
-      if (!rootValue) throw new Error('Choose the current project folder for this chat.');
+      if (!rootValue) throw new Error(`Choose the current project folder for “${conversation.title}”.`);
       const root = expand(rootValue);
       if (!root || root === '/') throw new Error('Choose the project folder for this chat.');
-      if (!(await lstat(root).catch(() => null))?.isDirectory()) throw new Error(`Project folder not found: ${root}. Locate its current path before importing.`);
+      if (!(await lstat(root).catch(() => null))?.isDirectory()) throw new Error(`Project folder not found for “${conversation.title}”: ${root}. Locate its current path before importing.`);
       if ((await realpath(root)) !== resolve(root)) throw new Error('Choose the real project folder rather than a symlink.');
       let projectId = projects.get(root);
       if (!projectId) {
@@ -72,7 +84,7 @@ export async function stageJob(index, t3Home, selections, { jobRoot = defaultJob
       if (providerHome !== index.codexHome) throw new Error('The selected Codex home differs from the home used by T3’s default Codex instance. Choose matching homes first; Threadlift does not move credentials or provider histories.');
       const threadId = `import:codex:${conversation.id}`, attachments = [];
       if (selected.assets?.some(k => !conversation.assets.some(a => a.key === k))) throw new Error('A selected file is no longer in this conversation. Review it again.');
-      const chosen = selected.assets === undefined ? new Set(conversation.assets.filter(a => a.kind === 'upload').map(a => a.key)) : new Set(selected.assets);
+      const chosen = selected.assets === undefined ? new Set(conversation.assets.map(a => a.key)) : new Set(selected.assets);
       let inventory;
       if (selected.recoverWorkspace) {
         if (resolve(conversation.cwd) === root) throw new Error('The files are already in the selected folder.');
@@ -131,7 +143,10 @@ export async function stageJob(index, t3Home, selections, { jobRoot = defaultJob
         if (extra) text = [...extra.values()].join('\n') + (text ? '\n\n' + text : '');
         return { ...message, text };
       });
-      job.batch.threads.push(makeThread({ ...conversation, messages }, projectId, root, attachments, defaults));
+      const thread = makeThread({ ...conversation, messages }, projectId, root, attachments, defaults);
+      historyBytes += Buffer.byteLength(JSON.stringify(thread));
+      if (historyBytes > LIMITS.batchHistoryBytes) throw Object.assign(new Error('Selected history exceeds the 256 MiB event limit for one batch.'), { code: 'THREADLIFT_BATCH_LIMIT' });
+      job.batch.threads.push(thread);
       job.sources.push({ id: conversation.id, title: conversation.title, sourceHash: conversation.sourceHash,
         sourcePath: conversation.path, originalFolder: conversation.cwd, destinationFolder: root, messageCount: conversation.messages.length });
       await writeFile(join(directory, `conversation-${conversation.id}.json`), JSON.stringify({

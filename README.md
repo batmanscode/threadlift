@@ -9,16 +9,16 @@ Threadlift is a local recovery helper for **macOS and the default Codex instance
 Copy this into a new T3 chat:
 
 ```text
-Read https://github.com/batmanscode/threadlift and use Threadlift to help me import my missing Codex chats. Launch the picker in my system browser so I can choose the chats and files. Leave existing chats unchanged.
+Read https://github.com/batmanscode/threadlift and use the latest Threadlift to help me import all missing Codex chats and their available files, including generated files. Launch the picker in my system browser so I can use Select all missing. Leave existing chats unchanged.
 ```
 
 With local command/file permissions, the agent can obtain and run Threadlift. You do not need to operate Terminal or install a separate Mac app yourself. The optional [skill](skills/threadlift/SKILL.md) teaches the same workflow; it is not required.
 
-1. **Select chats.** The browser lists recent local Codex chats, marks those already in T3, and previews the selected history and recoverable uploads.
-2. **Review files and folders.** Select the generated and linked files you want to recover. Keep project files in place, or opt in to copy files from the chat’s original folder. Existing destination files are never overwritten. Locate the current folder if it was renamed. Missing files are listed rather than invented.
+1. **Select all missing.** One button scans every date and selects the missing chats, with available uploads and generated/linked files selected by default. Chats already in T3 are skipped. You can also select individual chats. Chats that cannot be read are listed; acknowledge any omissions before continuing. Large selections are automatically divided into batches; you do not need to select 20 at a time.
+2. **Review files and folders.** Keep all available files selected, or deselect anything you do not want to recover. The current Codex project assignment determines the suggested folder, including chats moved from No project; Threadlift creates or reuses the T3 project for that folder. Chats needing a valid folder are identified before preparing. Keep project files in place, or opt in to copy files from the chat’s original folder. Existing destination files are never overwritten. Locate the current folder if it was renamed. Missing files are listed rather than invented.
 3. **Prepare import.** Threadlift stages the selected data and starts an independent helper. T3's database has not been changed yet.
 4. **Finish other T3 runs, then quit T3 with Cmd+Q.** Quitting T3 ends its active agent run; that is expected. The independent helper keeps working. Keep the system-browser tab open for progress and the receipt. Do not start another T3 server or CLI write during the import.
-5. **Wait.** The helper takes a consistent backup, imports, verifies, and reopens T3. The browser shows the result. If reopening fails, it explicitly asks you to open T3 normally.
+5. **Wait.** The helper takes a consistent backup for each batch, imports and verifies them, then reopens T3 once. Keep T3 closed until every batch finishes. The browser shows the result. If reopening fails, it explicitly asks you to open T3 normally.
 
 Find imported chats in T3’s **Settled** section, or search their titles. **Before doing real work in T3, check that the chats you expected are present, earlier and recent messages are readable, uploads open, and each chat points to the right project folder.** Review missing/skipped files in the receipt. If you want to check continuation, send a follow-up after reading the [shared-session note below](#local-data-and-recovery). The receipt distinguishes verified history/files from the original session binding; **a binding alone does not prove a successful live follow-up**.
 
@@ -58,17 +58,17 @@ node bin/threadlift.mjs status --job /absolute/path/to/job.json
 
 Existing T3 chats—including partial imports—are left unchanged. Threadlift does not merge into or replace them. It does not recreate deleted files, download remote-only attachments, migrate credentials/settings, replay every Codex tool/UI panel, or translate sessions to another provider. Only selected local file-link destinations change in the imported text; the original Codex messages and unselected links stay unchanged. Prose and code samples are preserved. Unselected historical paths may still point to an old folder.
 
-Local file links are opt-in in the picker; recorded attachments start selected. Review both file groups before preparing. Relative files use the folder recorded for their message, including inherited history. An unknown folder is reported instead of guessing.
+Available uploads and generated/linked files start selected. Review or deselect files before preparing; workspace-folder recovery stays opt-in. Bulk selection scans all dates, regardless of the current search filter. A repeated bulk scan refreshes the previews and retains explicit folder/file choices where still applicable. Relative files use the folder recorded for their message, including inherited history. An unknown folder is reported instead of guessing.
 
 Single-file HTML can be recovered alone. Pages with local images or other files need their folder layout preserved: use workspace recovery if it includes the whole page folder, or a ZIP. Selecting the page and its companions separately does not guarantee that layout. External linked files copied together share a relative folder tree, while files kept in the project or imported as chat uploads can be placed elsewhere. Threadlift does not inspect or rewrite links inside HTML. Check the rendered page in T3 after importing.
 
-Current bounds: 20 chats per job, 128 MiB of decompressed conversation data per chat including inherited history, 1 GiB of staged files per job, and 10,000 files per workspace recovery. T3's attachment limits also apply: 10 MiB per supported image, 50 MiB per ordinary file, 100 attachments per message. Oversized conversations are rejected rather than silently shortened. Workspace recovery skips `.git`, `node_modules`, `.venv`, `__pycache__`, and symlinks; the receipt lists skips.
+Current bounds: automatic batches of up to 20 chats, reduced further when necessary to fit 256 MiB of serialized import events and 1 GiB of staged files per batch; 128 MiB of decompressed conversation data per chat including inherited history, and 10,000 files per workspace recovery. T3's attachment limits also apply: 10 MiB per supported image, 50 MiB per ordinary file, 100 attachments per message. Oversized conversations are rejected rather than silently shortened. If one chat alone exceeds a batch limit, preparation stops rather than silently excluding it; reduce its selected files or report the history limit. Workspace recovery skips `.git`, `node_modules`, `.venv`, `__pycache__`, and symlinks; the receipt lists skips.
 
 ## Local data and recovery
 
 Chat data stays on this Mac. There is no telemetry, account, cloud upload, or Gemini/API dependency in Threadlift. Development review used synthetic test data.
 
-Each job lives in `~/Library/Application Support/Threadlift/jobs/` with private file permissions. It contains a conversation copy, staged files, a file manifest, a consistent SQLite backup, status, and a receipt. Treat this directory as private: it contains your chat content. The browser link is private too.
+Each job lives in `~/Library/Application Support/Threadlift/jobs/` with private file permissions. It contains conversation copies, staged files, manifests, status, and a receipt. A bulk job has child batch directories, each with its own consistent SQLite backup and receipt. Budget disk space for those backups as well as the recovered files: 400 small chats need at least 20 batches/backups. The batch-size limits do not cap the total disk space used by a bulk job. Treat this directory as private: it contains your chat content. The browser link is private too.
 
 Threadlift holds T3's own `server-owner.sqlite` lock throughout backup, import, and verification. It never deletes that lock or kills T3 processes. Unsupported database formats and managed T3 environments are refused.
 
@@ -78,7 +78,7 @@ Threadlift holds T3's own `server-owner.sqlite` lock throughout backup, import, 
 
 Source history is scanned again at Preview and Prepare. If a chat changed, review it again; unsupported rewinds stop instead of importing the discarded branch. Prepared project folders and previously identical files are checked again before writing. A renamed folder, changed project root, or missing expected file requires a rescan.
 
-History verification runs inside the SQLite transaction before commit: a pre-commit failure leaves T3’s database unchanged. If the helper is interrupted after commit, it preserves imported data. Retry checks use the stored import events and T3 chat identity, including when T3 has replaced the original native-session binding. A timeout or uncertain database state never authorizes deleting previously installed files. `node bin/threadlift.mjs apply --job /absolute/path/job.json` can verify/retry that same job without importing it twice. When verifying an interrupted job, it stops if the imported data has since changed. An already verified job returns its original dated receipt without importing again or performing a new history/file audit. Threadlift never automatically restores a database backup. Background workers run once; failed startup is stopped rather than left to restart later. If the handoff cannot be confirmed, the error identifies the private job directory to inspect before retrying.
+History verification runs inside each batch’s SQLite transaction before commit: a pre-commit failure leaves that batch’s database changes uncommitted. Earlier verified batches stay imported if a later one fails. The failure page identifies the verified batch count; retry the same parent job to continue without importing those chats twice. If the helper is interrupted after commit, it preserves imported data. Retry checks use the stored import events and T3 chat identity, including when T3 has replaced the original native-session binding. A timeout or uncertain database state never authorizes deleting previously installed files. `node bin/threadlift.mjs apply --job /absolute/path/job.json` can verify/retry that same job without importing it twice. When verifying an interrupted job, it stops if the imported data has since changed. Verified batches reuse their original dated receipts without a new audit when a bulk job resumes. An already verified job returns its original dated receipt without importing again or performing a new history/file audit. Threadlift never automatically restores a database backup. Background workers run once; failed startup is stopped rather than left to restart later. If the handoff cannot be confirmed, the error identifies the private job directory to inspect before retrying.
 
 Failures are reported in the browser and job status. A backup is not permission to replace a database after you have done new work: do not copy `before.sqlite` over a live or subsequently changed profile. Keep the job directory until you have checked the imported chat and files. Once satisfied and the helper has finished, you can remove the job directory to reclaim space and remove the extra local chat copy.
 
@@ -112,15 +112,17 @@ The build checks the exact release commits in [`adapters/t3-releases.json`](adap
 
 ### Verification
 
-Recorded automated baseline: Threadlift `0.1.6` with separate pinned T3 Code `0.1.12` and `0.1.13` fixtures.
+Recorded automated baseline: Threadlift `0.1.7` with separate pinned T3 Code `0.1.12` and `0.1.13` fixtures.
 
 | Area | Status | Evidence and limits |
 | --- | --- | --- |
-| Automated suite (`npm test`) | 27 tests passed on each version (54 checks), 2026-11-28 | Local and CI runs on isolated synthetic profiles using the native T3 writer, projection readback and file hashes. Covers history/file fidelity, source and existing-chat protection, locking, rollback, crash/retry, and origin/rewind/identity refusal. |
+| Automated suite (`npm test`) | 29 tests passed on each version (58 checks), 2026-11-28 | Local and CI runs on isolated synthetic profiles using the native T3 writer, projection readback and file hashes. Covers history/file fidelity, source and existing-chat protection, locking, rollback, crash/retry, origin/rewind/identity refusal, older-chat bulk scanning, shared projects/files across batches, and partial-batch retry. |
 | Official T3 `0.1.13` server and web client | Checked 2026-11-28 | A synthetic 260-message chat appeared in Settled; earlier turns loaded and generated HTML with its relative companion image rendered after deleting the synthetic source folder. This run did not test live continuation. The in-app PDF preview was blank, so visual PDF rendering remains unconfirmed. |
 | Official T3 `0.1.12` server and web client | Checked in an earlier release | Earlier history and upload downloads worked; a dedicated Codex test session continued with remembered context and read a copied workspace file. |
 | Generated-file recovery in the T3 `0.1.12` web client | Earlier synthetic check | With the original files removed, HTML and its relative companion image rendered, the chat image rendered, the ZIP was browsable, and the PDF served identical `application/pdf` bytes. The in-app test browser's PDF preview was blank; visual PDF rendering was not confirmed. |
 | macOS desktop `.app` handoff | **Not tested** | The desktop app was not installed during these checks. Actual `Cmd+Q` → independent worker → import/verify → automatic reopen has not been exercised. |
+
+The bulk picker was also checked in the browser on a synthetic profile: 21 missing chats and 63 files selected by one action across all dates, an unreadable chat explicitly omitted, two automatic batches verified. This did not exercise the desktop app lifecycle.
 
 The historical client checks were not rerun for every subsequent patch. This evidence covers the tested paths, not every possible Codex history, provider configuration, or future T3 version.
 
